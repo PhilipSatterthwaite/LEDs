@@ -60,18 +60,26 @@
 // ---------------------------------------------------------------------------
 // TP-Link Kasa KL125 -- the strip mirrors its colour to the bulb.
 //
-// Find the address in the Kasa app: the device, then the gear icon, Device
-// Info, IP Address. Leave BULB_IP empty to disable the whole feature.
+// PUT THE BULB ON THIS ESP'S OWN AP, not on the campus network. Reset it
+// (off/on three times until it blinks), run Kasa setup, and pick AP_SSID
+// instead of servicenet. The app will fail its cloud check-in, which does not
+// matter -- the bulb commits the credentials regardless, as it did before.
 //
-// Both the ESP and the bulb must be on the same network AND that network has
-// to permit client-to-client traffic. Campus WiFi frequently does not -- it is
-// the same isolation that stopped your phone reaching the ESP directly -- so
-// the probe at boot reports whether this works before anything depends on it.
+// Why: servicenet is a /15, 131,072 addresses, and a network that size
+// isolates its clients as a matter of course. On our own AP there is no
+// isolation to fight, the address space is a handful of hosts, and the ESP's
+// own DHCP table names the bulb outright -- so nothing has to be scanned or
+// hardcoded, and a changed lease fixes itself.
 //
-// A DHCP lease can move; if the bulb stops responding, re-check the app. The
-// Kasa app can also reserve the address under device settings.
+// The trade is that the bulb loses internet, so the Kasa app can only reach it
+// when your phone is also on AP_SSID. Control through this app is unaffected:
+// it goes phone -> broker -> Mega -> bulb.
+//
+// Set BULB_IP only to override discovery -- for a bulb on a normal home
+// network alongside the ESP, say. Empty means "find it on our AP".
 // ---------------------------------------------------------------------------
-#define BULB_IP     ""          // e.g. "10.8.251.160"
+#define BULB_MAC    "24:2f:d0:59:10:34"   // lower case, as AT+CWLIF reports it
+#define BULB_IP     ""                    // optional static override
 #define BULB_PORT   9999
 #define BULB_LINK   3
 
@@ -144,6 +152,10 @@ uint8_t gHue = 0;
 CRGB bulbTint = CRGB::Red;
 bool bulbDirty = false;
 unsigned long lastBulb = 0;
+
+// Declared here rather than beside the Kasa helpers because startWiFi() probes
+// the bulb during boot, and that sits higher in the file.
+char bulbIP[16] = BULB_IP;      // filled in by bulbFind() when left empty
 
 // ---------------------------------------------------------------------------
 // Patterns
@@ -549,13 +561,18 @@ bool startWiFi() {
   // Answers the question everything else depends on: can the ESP actually
   // reach the bulb, or does the network isolate its clients from each other?
   Serial.println(F("\n-- kasa bulb --"));
-  if (!BULB_IP[0]) {
-    Serial.println(F("BULB_IP not set -- Kasa app > device > gear > Device Info"));
-  } else if (bulbColour(CRGB::Red, 30)) {
-    Serial.print(F("\nbulb reachable at "));
-    Serial.println(F(BULB_IP));
+  Serial.println(F("stations on our AP:"));
+  if (!bulbFind()) {
+    Serial.print(F("\n\nno client with MAC "));
+    Serial.println(F(BULB_MAC));
+    Serial.print(F("reset the bulb and run Kasa setup against \""));
+    Serial.print(F(AP_SSID));
+    Serial.println(F("\""));
   } else {
-    Serial.println(F("\nno reply -- wrong IP, different subnet, or client isolation"));
+    Serial.print(F("\n\nbulb at "));
+    Serial.println(bulbIP);
+    if (bulbColour(CRGB::Red, 30)) Serial.println(F("\nbulb responded -- it should be red"));
+    else                           Serial.println(F("\njoined but not answering on 9999"));
   }
 
   Serial.println(F("\nserver up on port 80"));
@@ -639,16 +656,55 @@ bool espSend(uint8_t id, const uint8_t *data, uint16_t len) {
 // the next. It is obfuscation rather than encryption, but the bulb rejects
 // anything else.
 // ---------------------------------------------------------------------------
+// Asks the ESP which stations are on its AP and picks out the bulb by MAC.
+// AT+CWLIF answers one line per client as "<ip>,<mac>", so the lease is
+// authoritative -- no scanning, and a renewed address is picked up for free.
+bool bulbFind() {
+  bulbIP[0] = '\0';
+  esp.println(F("AT+CWLIF"));
+
+  char line[48];
+  uint8_t n = 0;
+  const unsigned long deadline = millis() + 5000;
+
+  while ((long)(millis() - deadline) < 0) {
+    const int c = esp.read();
+    if (c < 0) continue;
+    Serial.write(c);
+
+    if (c == '\n' || c == '\r') {
+      line[n] = '\0';
+      for (char *p = line; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
+
+      char *comma = strchr(line, ',');
+      if (comma && strstr(comma + 1, BULB_MAC)) {
+        *comma = '\0';
+        char *ip = line;
+        while (*ip && (*ip < '0' || *ip > '9')) ip++;   // skip any +CWLIF: prefix
+        strncpy(bulbIP, ip, sizeof(bulbIP) - 1);
+        bulbIP[sizeof(bulbIP) - 1] = '\0';
+        return true;
+      }
+      n = 0;
+    } else if (n < sizeof(line) - 1) {
+      line[n++] = (char)c;
+    }
+  }
+  return false;
+}
+
 bool bulbSend(const char *json) {
-  if (!BULB_IP[0]) return false;
+  if (!bulbIP[0] && !bulbFind()) return false;
 
   esp.print(F("AT+CIPSTART="));
   esp.print(BULB_LINK);
   esp.print(F(",\"TCP\",\""));
-  esp.print(F(BULB_IP));
+  esp.print(bulbIP);
   esp.print(F("\","));
   esp.println(BULB_PORT);
-  if (!waitFor("OK", 6000)) return false;
+  // A stale lease looks exactly like a dead bulb, so re-resolve once before
+  // giving up rather than staying broken until the next reboot.
+  if (!waitFor("OK", 6000)) { if (!BULB_IP[0]) bulbIP[0] = '\0'; return false; }
 
   const uint16_t n = strlen(json);
   esp.print(F("AT+CIPSEND="));
