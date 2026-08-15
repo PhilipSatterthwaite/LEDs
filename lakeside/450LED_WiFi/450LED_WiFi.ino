@@ -141,7 +141,7 @@ void cobalt()     { solid(  0,  71, 171); }
 // Animations, lifted from the old DemoReel100 sketch. Each renders ONE frame;
 // the frame loop calls them and owns the show(), so nothing here blocks.
 // ---------------------------------------------------------------------------
-enum { A_NONE = 0, A_CYCLE, A_WORM };
+enum { A_NONE = 0, A_CYCLE, A_WORM, A_QUAD };
 
 uint8_t anim = A_NONE;
 unsigned long lastFrame = 0;
@@ -229,10 +229,52 @@ void worm() {
   if ((wormPos >> 8) > NUM_LEDS + WORM_LEN) wormPos = 0;
 }
 
+// --- Quad: four pulses, evenly spaced to start. Worms 1 and 3 run 20% faster
+// --- than 2 and 4, so the spacing keeps changing -- they bunch up, overtake,
+// --- and spread out again instead of marching in fixed formation.
+#define WORMS     4
+#define WORM_FAST (WORM_SPEED * 6 / 5)     // +20%
+
+uint32_t quadPos[WORMS];
+
+void quadReset() {
+  for (uint8_t k = 0; k < WORMS; k++)
+    quadPos[k] = (uint32_t)(NUM_LEDS / WORMS) * k << 8;
+}
+
+void quad() {
+  fill_rainbow(leds, NUM_LEDS, 0, 7);
+
+  const uint16_t peak  = min((uint16_t)currBrightness + WORM_BOOST, (uint16_t)255);
+  const uint16_t range = peak - currBrightness;
+  const uint16_t span  = (uint16_t)WORM_LEN * WORM_LEN;
+
+  int head[WORMS];
+  for (uint8_t k = 0; k < WORMS; k++) head[k] = quadPos[k] >> 8;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint16_t v = currBrightness;
+    for (uint8_t k = 0; k < WORMS; k++) {
+      const int d = head[k] - i;
+      if (d < 0 || d >= WORM_LEN) continue;
+      const uint16_t f = (uint16_t)(WORM_LEN - d) * (WORM_LEN - d);
+      const uint16_t w = currBrightness + (uint32_t)f * range / span;
+      if (w > v) v = w;      // overlapping worms merge rather than stacking
+    }
+    scalePixel(i, v);
+  }
+
+  for (uint8_t k = 0; k < WORMS; k++) {
+    quadPos[k] += (k % 2 == 0) ? WORM_FAST : WORM_SPEED;   // worms 1 and 3 lead
+    if ((quadPos[k] >> 8) > NUM_LEDS + WORM_LEN) quadPos[k] = 0;
+  }
+}
+
 void renderFrame() {
   switch (anim) {
     case A_CYCLE: cycle(); break;
     case A_WORM:  worm();  break;
+    case A_QUAD:  quad();  break;
   }
 }
 
@@ -279,7 +321,8 @@ const char PAGE[] PROGMEM =
   ".sl{display:flex;justify-content:space-between;margin:8px 2px 20px;font-size:11px;"
   "color:var(--d);letter-spacing:.16em;text-transform:uppercase}"
   "h2{margin:0 0 10px;font-size:11px;font-weight:600;color:var(--d);letter-spacing:.2em;text-transform:uppercase}"
-  ".sc{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:22px}"
+  ".sc{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:22px}"
+  ".sc button{font-size:12px}"
   ".sc button{display:flex;flex-direction:column;align-items:center;gap:9px;padding:13px 8px 11px;"
   "border:1px solid var(--l);border-radius:var(--r);background:var(--s);color:var(--t);font:inherit;font-size:13px}"
   ".sc i{display:block;width:100%;height:16px;border-radius:5px}"
@@ -315,6 +358,8 @@ const char PAGE[] PROGMEM =
   "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Cycle</button>"
   "<button data-c=wo aria-pressed=false data-bg='radial-gradient(circle 26px at 72% 50%,transparent,rgba(0,0,0,.38) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
   "<i style='background:radial-gradient(circle 11px at 72% 50%,transparent,rgba(0,0,0,.38) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Worm</button>"
+  "<button data-c=w4 aria-pressed=false data-bg='repeating-linear-gradient(90deg,transparent 0 34px,rgba(0,0,0,.42) 62px 120px),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
+  "<i style='background:repeating-linear-gradient(90deg,transparent 0 10px,rgba(0,0,0,.42) 18px 34px),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>4 Worms</button>"
   "</div>"
 
   "<h2>Color</h2><div class=co>"
@@ -341,7 +386,7 @@ const char PAGE[] PROGMEM =
   "<script>"
   "var N={r:'Red',g:'Green',b:'Blue',w:'White',wm:'Warm',y:'Yellow',p:'Purple',"
   "lg:'Light green',lb:'Light blue',a:'Aqua',c:'Cobalt',rb:'Rainbow',"
-  "cy:'Cycle',wo:'Worm'};"
+  "cy:'Cycle',wo:'Worm',w4:'4 Worms'};"
   "var B=10,O=true,S=st,W=nw,V=bv,L=bl,P=pw;"
   // Dragging fires continuously; unthrottled it would flood a 115200 link and
   // stall the strip, since every show() blocks interrupts for ~13ms.
@@ -575,7 +620,8 @@ bool applyCommand(const char *path) {
 
   // --- animations: the frame loop takes over from here.
   if (!strcmp(path, "cy")) { anim = A_CYCLE; applyBrightness(); renderFrame(); return true; }
-  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0; applyBrightness(); renderFrame(); return true; }
+  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0;  applyBrightness(); renderFrame(); return true; }
+  if (!strcmp(path, "w4")) { anim = A_QUAD;  quadReset(); applyBrightness(); renderFrame(); return true; }
 
   // --- everything below is a static scene, so it stops any animation first.
   anim = A_NONE;
