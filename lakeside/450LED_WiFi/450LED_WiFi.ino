@@ -606,8 +606,20 @@ bool startWiFi() {
   Serial.println(F("BULB_ENABLE 1 and WIFI_SSID to that network."));
 #else
   Serial.println(F("\n-- kasa bulb --"));
-  Serial.println(F("stations on our AP:"));
-  if (!bulbFind()) {
+
+  // A configured address must not go through discovery: bulbFind() clears
+  // bulbIP before scanning, so calling it here would wipe the static value.
+  bool located;
+  if (BULB_IP[0]) {
+    Serial.print(F("configured address: "));
+    Serial.println(bulbIP);
+    located = true;
+  } else {
+    Serial.println(F("stations on our AP:"));
+    located = bulbFind();
+  }
+
+  if (!located) {
     // Restarting the sketch restarts the AP, and the bulb takes appreciably
     // longer to re-associate than the few seconds before this probe runs.
     // Discovery repeats on every push, so this is a status line, not a fault.
