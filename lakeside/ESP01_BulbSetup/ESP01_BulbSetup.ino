@@ -242,13 +242,37 @@ void setup() {
   sendAT(F("AT+CIPMUX=0"), "OK", 3000);
   drain(400);
 
-  Serial1.print(F("AT+CIPSTART=\"TCP\",\""));
-  Serial1.print(addr);
-  Serial1.println(F("\",9999"));
-  // CONNECT is specific to this command; OK is not, and matching a stray one
-  // is exactly what produced "link is not valid" last time.
-  if (!waitFor("CONNECT", 8000)) { Serial.println(F("\n!! bulb refused the connection")); return; }
-  drain(400);
+  // A link left open by an earlier run makes CIPSTART fail outright, and the
+  // bulb's TCP server is not necessarily up the instant the association
+  // completes -- so clear any stale link, let things settle, and retry.
+  Serial1.println(F("AT+CIPCLOSE"));
+  drain(800);
+  delay(1500);
+
+  bool opened = false;
+  for (uint8_t attempt = 1; attempt <= 3 && !opened; attempt++) {
+    Serial.print(F("\nconnecting to "));
+    Serial.print(addr);
+    Serial.print(F(" (attempt "));
+    Serial.print(attempt);
+    Serial.println(F(" of 3)"));
+
+    Serial1.print(F("AT+CIPSTART=\"TCP\",\""));
+    Serial1.print(addr);
+    Serial1.println(F("\",9999"));
+
+    // CONNECT is specific to this command; OK is not, and matching a stray one
+    // is exactly what produced "link is not valid" earlier.
+    opened = waitFor("CONNECT", 8000);
+    drain(600);
+    if (!opened) delay(2500);
+  }
+  if (!opened) {
+    Serial.println(F("\n!! bulb refused the connection on 9999"));
+    Serial.println(F("   ESP01_BulbInfo reaches the same address -- run that"));
+    Serial.println(F("   first to confirm the bulb is answering at all."));
+    return;
+  }
 
   char json[200];
   snprintf_P(json, sizeof(json),
