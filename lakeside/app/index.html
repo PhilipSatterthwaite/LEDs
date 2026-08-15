@@ -463,12 +463,15 @@ var BULB_ID = '80129AC33FC34D22F321A5A549B6731722476A36';
 // ("app version is too old"), and the accepted shape has changed over time.
 // Rather than guess, try the known forms in order and keep whichever works --
 // the console names it, so it can be pinned later if wanted.
+// All on the one endpoint known to answer. An alternate host was in here
+// briefly and only produced "failed to fetch", which is a dead name rather
+// than a useful result -- and it masked the real API errors ahead of it.
 var LOGIN_VARIANTS = [
   { url: TPLINK, appType: 'Kasa_Android', appVersion: '2.8.0' },
   { url: TPLINK, appType: 'Kasa_Android', appVersion: '1.4.4.607' },
+  { url: TPLINK, appType: 'Kasa_Android', appVersion: '3.4.1' },
   { url: TPLINK, appType: 'Kasa_iOS',     appVersion: '2.8.0' },
-  { url: TPLINK, appType: 'Kasa_Android' },
-  { url: 'https://n-wap-gw.tplinkcloud.com/', appType: 'Kasa_Android', appVersion: '2.8.0' }
+  { url: TPLINK, appType: 'Kasa_Android' }
 ];
 
 var lamp      = document.getElementById('lamp'),
@@ -521,10 +524,13 @@ function tryLogin(user, pass, v){
 function lampLogin(user, pass){
   lampSay('Connecting…', false);
 
-  var i = 0, lastErr = null;
+  // Prefer an error the API actually returned (it carries a code) over a
+  // transport failure from a later attempt -- otherwise one dead request
+  // hides every informative reply before it.
+  var i = 0, lastErr = null, apiErr = null;
   function next(){
     if (i >= LOGIN_VARIANTS.length) {
-      throw lastErr || new Error('no login variant accepted');
+      throw apiErr || lastErr || new Error('no login variant accepted');
     }
     var v = LOGIN_VARIANTS[i++];
     console.log('[tplink] trying', v.appType, v.appVersion || '(no version)', v.url);
@@ -537,6 +543,7 @@ function lampLogin(user, pass){
       lampSay('Connected', true);
     }).catch(function(err){
       lastErr = err;
+      if (!apiErr && /\[-?\d+\]/.test(err.message)) apiErr = err;   // has a code
       console.warn('[tplink] rejected:', v.appType, v.appVersion || '', '->', err.message);
       // A bad password fails every variant identically; no point grinding
       // through the rest, and the message is clearer if we stop here.
