@@ -181,7 +181,7 @@ body[data-ready=false] #pw{opacity:.4;pointer-events:none}
 <button id="pw" data-on="true">On</button>
 
 <div class="lamp" id="lamp" data-on="false">
-  <div><b>Lamp</b><span id="lampstate">Not connected</span></div>
+  <div><b>Lamp</b><span id="lampstate">Use the Kasa app</span></div>
   <button id="lampbtn">Connect</button>
 </div>
 
@@ -612,7 +612,12 @@ lampBtn.addEventListener('click', function(){
   var pass = prompt('TP-Link password', saved.p || '');
   if (!pass) return;
   lampLogin(user, pass).catch(function(err){
-    lampSay(String(err.message || err).slice(0, 40), false);
+    var msg = String(err.message || err);
+    // -23003 comes back identically for every payload shape, including one
+    // with no appVersion at all -- so it is the method being refused, not the
+    // version. The legacy Kasa cloud login was retired when TP-Link moved to
+    // unified accounts; no client string gets past it.
+    lampSay(/-23003/.test(msg) ? 'TP-Link retired this API' : msg.slice(0, 40), false);
     console.error('[tplink]', err);
   });
 });
