@@ -571,9 +571,15 @@ bool startWiFi() {
   Serial.println(F("\n-- kasa bulb --"));
   Serial.println(F("stations on our AP:"));
   if (!bulbFind()) {
-    Serial.print(F("\n\nno client with MAC "));
-    Serial.println(F(BULB_MAC));
-    Serial.print(F("reset the bulb and run Kasa setup against \""));
+    // Restarting the sketch restarts the AP, and the bulb takes appreciably
+    // longer to re-associate than the few seconds before this probe runs.
+    // Discovery repeats on every push, so this is a status line, not a fault.
+    Serial.print(F("\n\nnot on the AP yet ("));
+    Serial.print(F(BULB_MAC));
+    Serial.println(F(")"));
+    Serial.println(F("if it joined before, it is just re-associating -- give it"));
+    Serial.println(F("a minute and change a colour; discovery runs again then."));
+    Serial.print(F("if it has never joined, run Kasa setup against \""));
     Serial.print(F(AP_SSID));
     Serial.println(F("\""));
   } else {
