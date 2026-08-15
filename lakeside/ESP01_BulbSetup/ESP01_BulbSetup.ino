@@ -102,6 +102,37 @@ bool findBulbAP(char *out, uint8_t size) {
   return false;
 }
 
+// On the bulb's own setup network the gateway IS the bulb, so reading it beats
+// guessing -- Kasa hardware revisions differ, and 192.168.0.1 is only the most
+// common of several.
+bool getGateway(char *out, uint8_t size) {
+  Serial1.println(F("AT+CIPSTA?"));
+  const char *tok = "gateway:\"";
+  uint8_t m = 0;
+  const unsigned long deadline = millis() + 5000;
+  int c;
+
+  while ((long)(millis() - deadline) < 0) {
+    if ((c = Serial1.read()) < 0) continue;
+    Serial.write(c);
+
+    if (c == tok[m]) {
+      if (tok[++m] != '\0') continue;
+      uint8_t n = 0;
+      while ((long)(millis() - deadline) < 0) {
+        if ((c = Serial1.read()) < 0) continue;
+        Serial.write(c);
+        if (c == '"') break;
+        if (n < size - 1) out[n++] = (char)c;
+      }
+      out[n] = '\0';
+      return n > 0 && strcmp(out, "0.0.0.0") != 0;
+    }
+    m = (c == tok[0]) ? 1 : 0;
+  }
+  return false;
+}
+
 // 4-byte big-endian length, then the JSON through an XOR autokey stream seeded
 // at 0xAB -- each ciphertext byte becomes the key for the next.
 void writeEncrypted(const char *s) {
@@ -196,11 +227,23 @@ void setup() {
   if (!waitFor("WIFI GOT IP", 25000)) { Serial.println(F("\n!! could not join the setup AP")); return; }
   drain(1200);
 
+  Serial.println(F("\n-- addresses on the bulb's own network --"));
+  char addr[20];
+  if (!getGateway(addr, sizeof(addr))) {
+    strncpy(addr, BULB_SETUP_IP, sizeof(addr) - 1);
+    addr[sizeof(addr) - 1] = '\0';
+    Serial.print(F("\n\ncould not read the gateway, trying "));
+  } else {
+    Serial.print(F("\n\nbulb should be at "));
+  }
+  Serial.println(addr);
+  drain(600);
+
   sendAT(F("AT+CIPMUX=0"), "OK", 3000);
   drain(400);
 
   Serial1.print(F("AT+CIPSTART=\"TCP\",\""));
-  Serial1.print(F(BULB_SETUP_IP));
+  Serial1.print(addr);
   Serial1.println(F("\",9999"));
   // CONNECT is specific to this command; OK is not, and matching a stray one
   // is exactly what produced "link is not valid" last time.
