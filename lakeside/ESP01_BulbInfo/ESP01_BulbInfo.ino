@@ -16,7 +16,12 @@
 //
 // Monitor at 115200. Nothing to type.
 
-#define BULB_AP      "TP-LINK_Smart Bulb_XXXX"   // exact name, including spaces
+// Leave BULB_AP empty and the sketch scans for the setup AP itself, matching
+// any network whose name contains TP-LINK or Bulb. That avoids transcribing
+// the name by hand, which is worth doing: a single wrong character is
+// indistinguishable from the bulb not being in setup mode.
+// Set it explicitly only if the scan picks the wrong network.
+#define BULB_AP      ""
 #define BULB_AP_PASS ""                          // setup AP is open
 
 // Kasa devices sit at .1 on their own setup network. If the AT+CIPSTA readout
@@ -45,6 +50,46 @@ bool sendAT(const __FlashStringHelper *cmd, const char *expect, unsigned long ms
 }
 
 const char PROBE[] = "{\"system\":{\"get_sysinfo\":{}}}";
+
+// Scans and returns the first network that looks like a Kasa setup AP. The
+// SSID is the first quoted field of each +CWLAP:( record.
+bool findBulbAP(char *out, uint8_t size) {
+  Serial1.println(F("AT+CWLAP"));
+  const unsigned long deadline = millis() + 25000;
+  const char *tok = "+CWLAP:(";
+  uint8_t m = 0;
+  int c;
+
+  while ((long)(millis() - deadline) < 0) {
+    if ((c = Serial1.read()) < 0) continue;
+    Serial.write(c);                      // echo the scan so every AP is visible
+
+    if (c == tok[m]) {
+      if (tok[++m] != '\0') continue;
+      m = 0;
+
+      while ((long)(millis() - deadline) < 0) {      // skip to the opening quote
+        if ((c = Serial1.read()) < 0) continue;
+        Serial.write(c);
+        if (c == '"') break;
+      }
+      uint8_t n = 0;
+      while ((long)(millis() - deadline) < 0) {      // capture to the closing one
+        if ((c = Serial1.read()) < 0) continue;
+        Serial.write(c);
+        if (c == '"') break;
+        if (n < size - 1) out[n++] = (char)c;
+      }
+      out[n] = '\0';
+
+      if (strstr(out, "TP-LINK") || strstr(out, "TP-Link") || strstr(out, "Bulb"))
+        return true;
+    } else {
+      m = (c == tok[0]) ? 1 : 0;
+    }
+  }
+  return false;
+}
 
 // Streams the reply out decrypted rather than buffering it -- sysinfo runs to
 // several hundred bytes, and there is no reason to hold it all in SRAM.
@@ -98,18 +143,32 @@ void setup() {
   sendAT(F("ATE0"), "OK", 3000);
   sendAT(F("AT+CWMODE=1"), "OK", 3000);
 
-  Serial.print(F("\njoining \""));
-  Serial.print(F(BULB_AP));
+  char ssid[48];
+  if (BULB_AP[0]) {
+    strncpy(ssid, BULB_AP, sizeof(ssid) - 1);
+    ssid[sizeof(ssid) - 1] = '\0';
+  } else {
+    Serial.println(F("\n-- scanning for the setup AP --"));
+    if (!findBulbAP(ssid, sizeof(ssid))) {
+      Serial.println(F("\n\n!! no TP-LINK network in range."));
+      Serial.println(F("   Reset the bulb -- off/on three times quickly until"));
+      Serial.println(F("   it blinks -- then run this again. Setup mode times"));
+      Serial.println(F("   out after a few minutes."));
+      return;
+    }
+  }
+
+  Serial.print(F("\n\njoining \""));
+  Serial.print(ssid);
   Serial.println(F("\" ..."));
 
   Serial1.print(F("AT+CWJAP=\""));
-  Serial1.print(F(BULB_AP));
+  Serial1.print(ssid);
   Serial1.print(F("\",\""));
   Serial1.print(F(BULB_AP_PASS));
   Serial1.println(F("\""));
   if (!waitFor("OK", 25000)) {
-    Serial.println(F("\n!! could not join -- is the bulb blinking, and is"));
-    Serial.println(F("   BULB_AP spelled exactly as it appears in the list?"));
+    Serial.println(F("\n!! could not join that network"));
     return;
   }
 
