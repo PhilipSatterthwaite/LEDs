@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#0A0D12"/>
+  <!-- Content kept inside the centre 80% so maskable crops don't clip it. -->
+  <g>
+    <rect x="96"  y="212" width="44" height="88" rx="14" fill="#FF3B30"/>
+    <rect x="164" y="212" width="44" height="88" rx="14" fill="#FFD60A"/>
+    <rect x="232" y="212" width="44" height="88" rx="14" fill="#30D158"/>
+    <rect x="300" y="212" width="44" height="88" rx="14" fill="#0A84FF"/>
+    <rect x="368" y="212" width="44" height="88" rx="14" fill="#BF5AF2"/>
+  </g>
+  <g opacity="0.28">
+    <rect x="96"  y="316" width="44" height="14" rx="7" fill="#FF3B30"/>
+    <rect x="164" y="316" width="44" height="14" rx="7" fill="#FFD60A"/>
+    <rect x="232" y="316" width="44" height="14" rx="7" fill="#30D158"/>
+    <rect x="300" y="316" width="44" height="14" rx="7" fill="#0A84FF"/>
+    <rect x="368" y="316" width="44" height="14" rx="7" fill="#BF5AF2"/>
+  </g>
+</svg>

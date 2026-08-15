@@ -1,0 +1,14 @@
+# Arduino build output
+build/
+*.hex
+*.elf
+*.bin
+*.map
+
+# Arduino IDE 2.x workspace state
+.theia/
+
+# OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store

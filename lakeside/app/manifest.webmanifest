@@ -1,0 +1,14 @@
+{
+  "name": "Lakeside Light Desk",
+  "short_name": "Lakeside",
+  "description": "Controls for the 450-LED strip over MQTT",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0A0D12",
+  "theme_color": "#0A0D12",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
