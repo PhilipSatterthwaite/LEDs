@@ -78,6 +78,19 @@
 // Set BULB_IP only to override discovery -- for a bulb on a normal home
 // network alongside the ESP, say. Empty means "find it on our AP".
 // ---------------------------------------------------------------------------
+// OFF, because it cannot work in this arrangement. Discovery is fine -- CWLIF
+// names the bulb on our AP -- but AT+CIPSTART to it returns ERROR every time.
+// The AT firmware's TCP client binds to the station interface, so an address
+// on its own SoftAP subnet is unreachable to it. That is a firmware limit, not
+// something the sketch can route around.
+//
+// Every attempt also blocks for seconds while waitFor discards incoming MQTT,
+// so leaving it enabled costs commands to the strip for no benefit.
+//
+// Set to 1 when the bulb is somewhere the ESP can actually reach it: both
+// joined to the same ordinary router, where neither is hosting the other.
+#define BULB_ENABLE 0
+
 #define BULB_MAC    "24:2f:d0:59:10:34"   // lower case, as AT+CWLIF reports it
 #define BULB_IP     ""                    // optional static override
 #define BULB_PORT   9999
@@ -568,6 +581,12 @@ bool startWiFi() {
 
   // Answers the question everything else depends on: can the ESP actually
   // reach the bulb, or does the network isolate its clients from each other?
+#if !BULB_ENABLE
+  Serial.println(F("\n-- kasa bulb: disabled --"));
+  Serial.println(F("AT+CIPSTART cannot reach a client of the ESP's own AP."));
+  Serial.println(F("Put the bulb and the ESP on one ordinary router, then set"));
+  Serial.println(F("BULB_ENABLE 1 and WIFI_SSID to that network."));
+#else
   Serial.println(F("\n-- kasa bulb --"));
   Serial.println(F("stations on our AP:"));
   if (!bulbFind()) {
@@ -589,6 +608,7 @@ bool startWiFi() {
     if (bulbColour(CRGB::Red, 30)) Serial.println(F("\nbulb responded -- it should be red"));
     else                           Serial.println(F("\njoined but not answering on 9999"));
   }
+#endif
 
   Serial.println(F("\nserver up on port 80"));
   Serial.print(F("fallback: join \""));
@@ -1040,9 +1060,11 @@ void loop() {
     // The bulb costs a TCP round trip, so it is pushed from the idle path and
     // rate limited -- never in front of an LED frame, never once per slider
     // step. Frames take priority; the bulb catches up when there is slack.
+#if BULB_ENABLE
     const unsigned long bulbWait =
       (bulbFails >= BULB_MAX_FAILS) ? BULB_RETRY_MS : BULB_MIN_MS;
     if (bulbDirty && millis() - lastBulb >= bulbWait) { bulbPush(); return; }
+#endif
 
     if (anim) {
       const unsigned long t = millis();
