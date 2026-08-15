@@ -151,38 +151,48 @@ unsigned long lastFrame = 0;
 #define FRAME_MS 50
 
 // --- Cycle: whole strip one colour, drifting through the spectrum. ---------
-// 8.8 fixed point so the hue can crawl slower than one step per frame; at
-// 20fps this works out to a full loop roughly every 30 seconds.
+// Hue is 8.8 fixed point. Below ~256 per frame the visible hue stalls for two
+// or three frames and then jumps, which reads as choppy -- so the step is kept
+// above one whole hue per frame and the motion stays continuous.
+// 330 works out to a full loop every ~10s at 20fps. Raise it to go faster.
 uint16_t cycleHue = 0;
-#define CYCLE_STEP 110
+#define CYCLE_STEP 330
 
 void cycle() {
   cycleHue += CYCLE_STEP;
   fill_solid(leds, NUM_LEDS, CHSV(cycleHue >> 8, 255, 255));
 }
 
-// --- Worm: a static rainbow with a bright head running along it. -----------
-// The tail adds white rather than replacing colour, so the underlying rainbow
-// still reads through the pulse instead of being wiped out by it.
-int wormPos = 0;
+// --- Worm: a bright pulse running along a dimmed rainbow. ------------------
+// Purely a brightness change: nscale8 scales R, G and B together, so hue and
+// saturation are untouched and the pulse never washes toward white. That needs
+// headroom, which is why the rainbow rests at WORM_BASE rather than full --
+// there is nowhere above 255 for a pulse to go.
+//
+// Position is 8.8 fixed point too, so the worm can advance less than a whole
+// pixel per frame without the motion becoming a stutter.
+uint32_t wormPos = 0;
 #define WORM_LEN   28     // pixels from head to fully faded tail
-#define WORM_SPEED 6      // pixels per frame -- ~3.5s end to end at 20fps
-#define WORM_PEAK  200    // brightness added at the head, 0-255
+#define WORM_SPEED 307    // 1.2 px/frame -- ~19s end to end at 20fps
+#define WORM_BASE  70     // resting brightness of the rainbow, 0-255
 
 void worm() {
   fill_rainbow(leds, NUM_LEDS, 0, 7);
+  const int head = wormPos >> 8;
 
-  for (int i = 0; i < WORM_LEN; i++) {
-    const int p = wormPos - i;
-    if (p < 0 || p >= NUM_LEDS) continue;
-    // Squared falloff: a sharp head with a long, soft trail behind it.
-    const uint16_t f = (uint16_t)(WORM_LEN - i) * (WORM_LEN - i);
-    const uint8_t boost = (uint32_t)f * WORM_PEAK / ((uint16_t)WORM_LEN * WORM_LEN);
-    leds[p] += CRGB(boost, boost, boost);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    const int d = head - i;
+    uint8_t v = WORM_BASE;
+    if (d >= 0 && d < WORM_LEN) {
+      // Squared falloff: a sharp head with a long, soft trail behind it.
+      const uint16_t f = (uint16_t)(WORM_LEN - d) * (WORM_LEN - d);
+      v = WORM_BASE + (uint32_t)f * (255 - WORM_BASE) / ((uint16_t)WORM_LEN * WORM_LEN);
+    }
+    leds[i].nscale8(v);
   }
 
   wormPos += WORM_SPEED;
-  if (wormPos > NUM_LEDS + WORM_LEN) wormPos = 0;
+  if ((wormPos >> 8) > NUM_LEDS + WORM_LEN) wormPos = 0;
 }
 
 void renderFrame() {
@@ -269,8 +279,8 @@ const char PAGE[] PROGMEM =
   "<h2>Moving</h2><div class=sc>"
   "<button data-c=cy aria-pressed=false data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
   "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Cycle</button>"
-  "<button data-c=wo aria-pressed=false data-bg='radial-gradient(circle 22px at 72% 50%,#fff,transparent 70%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
-  "<i style='background:radial-gradient(circle 9px at 72% 50%,#fff,transparent 70%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Worm</button>"
+  "<button data-c=wo aria-pressed=false data-bg='radial-gradient(circle 26px at 72% 50%,transparent,rgba(0,0,0,.72) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
+  "<i style='background:radial-gradient(circle 11px at 72% 50%,transparent,rgba(0,0,0,.72) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Worm</button>"
   "</div>"
 
   "<h2>Color</h2><div class=co>"
