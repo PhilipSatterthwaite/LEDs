@@ -131,13 +131,25 @@ void lightBlue()  { solid(  0, 255, 255); }
 void aqua()       { solid(  0, 191, 255); }
 void cobalt()     { solid(  0,  71, 171); }
 
-void crossword() {
-  const int whitelength = 3;
-  const int blacklength = 15;
-  const int period = whitelength + blacklength;
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = (i % period) < whitelength ? CRGB(255, 255, 255) : CRGB(0, 0, 0);
+// Hex nibble, or 255 for anything that is not a hex digit.
+uint8_t nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return 255;
+}
+
+// "hRRGGBB" -> arbitrary colour from the wheel. Deliberately not "#RRGGBB":
+// a '#' in a URL is a fragment delimiter and never reaches the server, so the
+// same command could not be used by both the MQTT and HTTP paths.
+bool applyHex(const char *s) {
+  uint8_t v[6];
+  for (uint8_t i = 0; i < 6; i++) {
+    v[i] = nibble(s[1 + i]);
+    if (v[i] == 255) return false;
   }
+  solid(v[0] << 4 | v[1], v[2] << 4 | v[3], v[4] << 4 | v[5]);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,33 +179,32 @@ const char PAGE[] PROGMEM =
   "border:1px solid var(--l);border-radius:var(--r);background:var(--s);color:var(--t);font:inherit;font-size:13px}"
   ".sc i{display:block;width:100%;height:16px;border-radius:5px}"
   ".sc button[aria-pressed=true]{background:var(--z);border-color:#5A6879}"
-  ".co{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin-bottom:24px}"
+  ".co{display:grid;grid-template-columns:repeat(6,1fr);gap:9px;margin-bottom:22px}"
   ".sw{aspect-ratio:1;padding:0;border:none;border-radius:50%;background:var(--c);transition:box-shadow .16s;"
   "box-shadow:0 0 0 1px #0006 inset,0 5px 16px -7px var(--c)}"
   ".sw[aria-pressed=true]{box-shadow:0 0 0 2px var(--g),0 0 0 4px var(--t),0 0 26px -4px var(--c)}"
-  ".ra{display:grid;grid-template-columns:1fr auto;gap:9px}"
-  ".br{display:grid;grid-template-columns:52px 1fr 52px;align-items:center;"
-  "background:var(--s);border:1px solid var(--l);border-radius:var(--r)}"
-  ".br button{padding:15px 0;border:none;border-radius:var(--r);background:none;color:var(--t);font:inherit;font-size:22px}"
-  "#bv{text-align:center;font-size:13px;color:var(--d);letter-spacing:.1em}"
-  "#pw{padding:0 22px;border:1px solid var(--l);border-radius:var(--r);background:var(--s);color:var(--t);"
+  ".one{width:100%;margin-bottom:22px}"
+  ".pn{background:var(--s);border:1px solid var(--l);border-radius:var(--r);padding:12px 14px;margin-bottom:9px}"
+  ".pn .hd{display:flex;justify-content:space-between;font-size:12px;color:var(--d);margin-bottom:9px}"
+  "input[type=range]{width:100%;accent-color:#7FB2FF}"
+  "input[type=color]{width:100%;height:38px;padding:0;background:none;"
+  "border:1px solid var(--l);border-radius:8px}"
+  "#pw{width:100%;padding:15px 0;border:1px solid var(--l);border-radius:var(--r);"
+  "background:var(--s);color:var(--t);"
   "font:inherit;font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}"
   "#pw[data-on=false]{background:#2A1A1C;border-color:#5B2F33;color:#F0A8AE}"
   "button{cursor:pointer}button:active{transform:scale(.96)}"
-  "button:focus-visible{outline:2px solid #7FB2FF;outline-offset:3px}"
+  "button:focus-visible,input:focus-visible{outline:2px solid #7FB2FF;outline-offset:3px}"
   "@media(prefers-reduced-motion:reduce){*{transition:none!important}}"
   "</style>"
 
-  "<header><h1>Lakeside</h1><span class=c>450 &middot; WS2812B</span></header>"
+  "<header><h1>LEDs</h1><span class=c>450 &middot; WS2812B</span></header>"
   "<div id=st></div>"
   "<div class=sl><span id=nw>Rainbow</span><span id=bl>50 / 50</span></div>"
 
-  "<h2>Scenes</h2><div class=sc>"
+  "<div class='sc one'>"
   "<button data-c=rb aria-pressed=true data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
   "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Rainbow</button>"
-  "<button data-c=wm aria-pressed=false data-bg=#FFA239><i style='background:#FFA239'></i>Warm</button>"
-  "<button data-c=x aria-pressed=false data-bg='repeating-linear-gradient(90deg,#fff 0 6px,#0a0d12 6px 34px)'>"
-  "<i style='background:repeating-linear-gradient(90deg,#fff 0 4px,#0a0d12 4px 20px)'></i>Crossword</button>"
   "</div>"
 
   "<h2>Color</h2><div class=co>"
@@ -201,6 +212,7 @@ const char PAGE[] PROGMEM =
   "<button class=sw style='--c:#00FF00' data-c=g  title=Green></button>"
   "<button class=sw style='--c:#0000FF' data-c=b  title=Blue></button>"
   "<button class=sw style='--c:#FFFFFF' data-c=w  title=White></button>"
+  "<button class=sw style='--c:#FFA239' data-c=wm title=Warm></button>"
   "<button class=sw style='--c:#FFEA00' data-c=y  title=Yellow></button>"
   "<button class=sw style='--c:#5F00A0' data-c=p  title=Purple></button>"
   "<button class=sw style='--c:#228B22' data-c=lg title='Light green'></button>"
@@ -209,27 +221,38 @@ const char PAGE[] PROGMEM =
   "<button class=sw style='--c:#0047AB' data-c=c  title=Cobalt></button>"
   "</div>"
 
-  "<div class=ra><div class=br>"
-  "<button data-c=dn aria-label=Dimmer>&minus;</button>"
-  "<span id=bv>Brightness 50</span>"
-  "<button data-c=up aria-label=Brighter>+</button>"
-  "</div><button id=pw data-c=off data-on=true>On</button></div>"
+  "<h2>Fine colour</h2>"
+  "<div class=pn><input type=color id=cp value='#FF8800'></div>"
+
+  "<div class=pn><div class=hd><span>Brightness</span><span id=bv>50</span></div>"
+  "<input type=range id=sr min=1 max=50 value=50></div>"
+
+  "<button id=pw data-c=off data-on=true>On</button>"
 
   "<script>"
-  "var N={r:'Red',g:'Green',b:'Blue',w:'White',y:'Yellow',p:'Purple',lg:'Light green',"
-  "lb:'Light blue',a:'Aqua',c:'Cobalt',rb:'Rainbow',wm:'Warm',x:'Crossword'};"
+  "var N={r:'Red',g:'Green',b:'Blue',w:'White',wm:'Warm',y:'Yellow',p:'Purple',"
+  "lg:'Light green',lb:'Light blue',a:'Aqua',c:'Cobalt',rb:'Rainbow'};"
   "var B=50,O=true,S=st,W=nw,V=bv,L=bl,P=pw;"
+  // Dragging fires continuously; unthrottled it would flood a 115200 link and
+  // stall the strip, since every show() blocks interrupts for ~13ms.
+  "var T=0,Q,K;"
+  "function go(c){var n=Date.now();"
+  "if(n-T>=140){T=n;fetch('/'+c)}"
+  "else{Q=c;clearTimeout(K);K=setTimeout(function(){T=Date.now();fetch('/'+Q)},140-(n-T))}}"
   "function u(){S.style.filter=O?'brightness('+(.25+.75*B/50)+')':'brightness(.08)';"
-  "V.textContent=O?'Brightness '+B:'Off';L.textContent=(O?B:0)+' / 50';"
+  "V.textContent=B;L.textContent=(O?B:0)+' / 50';"
   "P.textContent=O?'On':'Off';P.dataset.on=O}"
+  "function mark(el,bg,nm){document.querySelectorAll('[aria-pressed]').forEach(function(x){"
+  "x.setAttribute('aria-pressed','false')});if(el)el.setAttribute('aria-pressed','true');"
+  "S.style.background=bg;W.textContent=nm}"
   "document.body.addEventListener('click',function(e){"
-  "var b=e.target.closest('[data-c]');if(!b)return;var c=b.dataset.c;fetch('/'+c);"
-  "if(c=='up'){B=Math.min(B+10,50);O=true}"
-  "else if(c=='dn'){B=Math.max(B-10,0)}"
-  "else if(c=='off'){O=!O}"
-  "else{document.querySelectorAll('[aria-pressed]').forEach(function(x){x.setAttribute('aria-pressed','false')});"
-  "b.setAttribute('aria-pressed','true');S.style.background=b.dataset.bg||b.style.getPropertyValue('--c');"
-  "W.textContent=N[c]||c;O=true}u()});u();"
+  "var b=e.target.closest('[data-c]');if(!b)return;var c=b.dataset.c;go(c);"
+  "if(c=='off'){O=!O}"
+  "else{mark(b,b.dataset.bg||b.style.getPropertyValue('--c'),N[c]||c);O=true}u()});"
+  "sr.addEventListener('input',function(){B=+sr.value;O=true;go('v'+B);u()});"
+  "cp.addEventListener('input',function(){var v=cp.value;"
+  "mark(null,v,v.toUpperCase());O=true;go('h'+v.slice(1));u()});"
+  "u();"
   "</scr" "ipt>";
 
 // ---------------------------------------------------------------------------
@@ -412,6 +435,19 @@ bool espSend(uint8_t id, const uint8_t *data, uint16_t len) {
 // Returns true if the strip changed and needs a show().
 // ---------------------------------------------------------------------------
 bool applyCommand(const char *path) {
+  // hRRGGBB -- arbitrary colour from the wheel.
+  if (path[0] == 'h' && strlen(path) == 7) return applyHex(path);
+
+  // v<n> -- absolute brightness, 1..MAX_BRIGHTNESS. Zero is deliberately not
+  // reachable here; only the power button turns the strip off, so dragging the
+  // slider to its bottom leaves the lights on at their dimmest.
+  if (path[0] == 'v' && path[1]) {
+    const int n = constrain(atoi(path + 1), 1, MAX_BRIGHTNESS);
+    currBrightness = savedBrightness = n;
+    FastLED.setBrightness(n);
+    return true;
+  }
+
   if (!strcmp(path, "rb")) { rainbow();    return true; }
   if (!strcmp(path, "wm")) { warm();       return true; }
   if (!strcmp(path, "r"))  { red();        return true; }
@@ -424,27 +460,14 @@ bool applyCommand(const char *path) {
   if (!strcmp(path, "lb")) { lightBlue();  return true; }
   if (!strcmp(path, "a"))  { aqua();       return true; }
   if (!strcmp(path, "c"))  { cobalt();     return true; }
-  if (!strcmp(path, "x"))  { crossword();  return true; }
 
   if (!strcmp(path, "off")) {
     if (currBrightness == 0) {
-      currBrightness = savedBrightness;
+      currBrightness = savedBrightness ? savedBrightness : MAX_BRIGHTNESS;
     } else {
       savedBrightness = currBrightness;
       currBrightness = 0;
     }
-    FastLED.setBrightness(currBrightness);
-    return true;
-  }
-  if (!strcmp(path, "up")) {
-    currBrightness = min(currBrightness + 10, MAX_BRIGHTNESS);
-    savedBrightness = currBrightness;
-    FastLED.setBrightness(currBrightness);
-    return true;
-  }
-  if (!strcmp(path, "dn")) {
-    currBrightness = max(currBrightness - 10, 0);
-    savedBrightness = currBrightness;
     FastLED.setBrightness(currBrightness);
     return true;
   }
