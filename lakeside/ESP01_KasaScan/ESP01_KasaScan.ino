@@ -182,6 +182,14 @@ void setup() {
   Serial.println(F("\n-- our address --"));
   sendAT(F("AT+CIFSR"), "OK", 4000);
 
+  // The netmask decides whether the sweep below even covers the right range.
+  // A campus DHCP pool is often far wider than a /24, and the bulb can then
+  // sit on a different third octet entirely -- in which case a silent sweep
+  // means "looked in the wrong place", not "unreachable".
+  Serial.println(F("\n-- subnet --"));
+  if (!sendAT(F("AT+CIPSTA?"), "OK", 4000)) sendAT(F("AT+CIPSTA_CUR?"), "OK", 4000);
+  Serial.println(F("\nif netmask is not 255.255.255.0, SWEEP_PREFIX is too narrow"));
+
   broadcastScan();
   sweep();
 
