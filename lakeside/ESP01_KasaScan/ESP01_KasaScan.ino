@@ -16,10 +16,11 @@
 #define WIFI_SSID  "servicenet"
 #define WIFI_PASS  ""             // open network
 
-// If the broadcast finds nothing, set this to sweep the subnet one address at
-// a time instead. Slow -- roughly 4-8 minutes for a /24 -- but it works on
-// networks that drop broadcast traffic between clients.
-#define SWEEP        0
+// Networks that drop broadcast between clients often still pass unicast, so a
+// silent broadcast is not the end of it. The sweep below sends the same probe
+// to every address individually. It runs automatically -- over UDP there is no
+// handshake to wait out, so the whole /24 takes about half a minute rather
+// than the many minutes a TCP connect sweep would.
 #define SWEEP_PREFIX "10.8.251."  // first three octets of the ESP's own STAIP
 
 #define ESP_BAUD 115200
@@ -43,16 +44,35 @@ bool sendAT(const __FlashStringHelper *cmd, const char *expect, unsigned long ms
   return waitFor(expect, ms);
 }
 
-// Quiet variant -- the sweep would otherwise bury the result in AT chatter.
-bool quietAT(unsigned long timeout, const char *token) {
-  unsigned long start = millis();
+// Waits for a token while watching for replies at the same time. 254 probes
+// generate a lot of routine AT chatter, and a hit arriving in the middle of it
+// would be invisible -- so ordinary traffic is swallowed and only lines
+// carrying +IPD are surfaced.
+char lineBuf[100];
+uint8_t lineN = 0;
+uint8_t hits = 0;
+
+bool pump(const char *token, unsigned long timeout) {
+  const unsigned long end = millis() + timeout;
   uint8_t m = 0;
-  while (millis() - start < timeout) {
-    while (Serial1.available()) {
-      char c = Serial1.read();
-      if (c == token[m]) { if (token[++m] == '\0') return true; }
-      else m = (c == token[0]) ? 1 : 0;
+  while ((long)(millis() - end) < 0) {
+    const int c = Serial1.read();
+    if (c < 0) continue;
+
+    if (c == '\n' || c == '\r') {
+      lineBuf[lineN] = '\0';
+      if (lineN > 4 && strstr(lineBuf, "+IPD")) {
+        Serial.print(F("\n*** REPLY: "));
+        Serial.println(lineBuf);
+        hits++;
+      }
+      lineN = 0;
+    } else if (lineN < sizeof(lineBuf) - 1) {
+      lineBuf[lineN++] = (char)c;
     }
+
+    if (c == token[m]) { if (token[++m] == '\0') return true; }
+    else m = (c == token[0]) ? 1 : 0;
   }
   return false;
 }
@@ -94,32 +114,49 @@ void broadcastScan() {
   sendAT(F("AT+CIPDINFO=0"), "OK", 3000);
 }
 
+// Sends the probe to every address on the /24 individually. UDP mode 2 lets a
+// single socket retarget per send, so this is one open connection and 254
+// datagrams rather than 254 connection attempts.
 void sweep() {
-#if SWEEP
-  Serial.println(F("\n=== subnet sweep ==="));
-  sendAT(F("AT+CIPMUX=0"), "OK", 3000);
+  Serial.println(F("\n\n=== unicast sweep ==="));
+  Serial.print(F("probing "));
+  Serial.print(F(SWEEP_PREFIX));
+  Serial.println(F("1-254, about 30s -- a dot is 16 addresses"));
 
-  for (uint8_t host = 2; host < 255; host++) {
-    Serial1.print(F("AT+CIPSTART=\"TCP\",\""));
+  sendAT(F("AT+CIPMUX=1"), "OK", 3000);
+  sendAT(F("AT+CIPDINFO=1"), "OK", 3000);
+
+  Serial1.print(F("AT+CIPSTART=0,\"UDP\",\""));
+  Serial1.print(F(SWEEP_PREFIX));
+  Serial1.println(F("1\",9999,9999,2"));
+  if (!waitFor("OK", 6000)) { Serial.println(F("\n!! could not open UDP")); return; }
+
+  const uint16_t n = strlen(PROBE);
+  hits = 0;
+
+  for (uint16_t host = 1; host < 255; host++) {
+    Serial1.print(F("AT+CIPSEND=0,"));
+    Serial1.print(n);
+    Serial1.print(F(",\""));
     Serial1.print(F(SWEEP_PREFIX));
     Serial1.print(host);
     Serial1.println(F("\",9999"));
 
-    if (quietAT(1500, "CONNECT")) {
-      Serial.print(F("\n*** something answers on port 9999 at "));
-      Serial.print(F(SWEEP_PREFIX));
-      Serial.println(host);
-      quietAT(1000, "OK");
-      Serial1.println(F("AT+CIPCLOSE"));
-      quietAT(2000, "OK");
-    } else {
-      Serial1.println(F("AT+CIPCLOSE"));
-      quietAT(600, "OK");
-      if ((host % 16) == 0) { Serial.print('.'); }
-    }
+    if (!pump(">", 1200)) continue;
+    writeEncrypted(false);
+    pump("SEND OK", 1500);
+
+    if ((host % 16) == 0) Serial.print('.');
   }
-  Serial.println(F("\nsweep done"));
-#endif
+
+  Serial.println(F("\nlistening 5s for stragglers"));
+  pump("\xFF", 5000);                    // no token -- just drains and reports
+
+  Serial.print(F("\nreplies: "));
+  Serial.println(hits);
+
+  sendAT(F("AT+CIPCLOSE=0"), "OK", 3000);
+  sendAT(F("AT+CIPDINFO=0"), "OK", 3000);
 }
 
 void setup() {
