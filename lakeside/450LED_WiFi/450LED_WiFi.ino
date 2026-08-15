@@ -87,6 +87,13 @@
 // the command rate the sliders produce, hence the rate limit below.
 #define BULB_MIN_MS 700
 
+// A bulb push blocks while it waits on AT replies, and those waits discard
+// whatever else arrives -- including incoming MQTT commands. So a bulb that is
+// failing must not be retried on every colour change, or it eats the strip's
+// responsiveness. After this many consecutive failures, back off hard.
+#define BULB_MAX_FAILS 3
+#define BULB_RETRY_MS  30000
+
 // ---------------------------------------------------------------------------
 // ESP-01 link -- Mega hardware UART 1
 //
@@ -152,6 +159,7 @@ uint8_t gHue = 0;
 CRGB bulbTint = CRGB::Red;
 bool bulbDirty = false;
 unsigned long lastBulb = 0;
+uint8_t bulbFails = 0;          // consecutive failures, drives the backoff
 
 // Declared here rather than beside the Kasa helpers because startWiFi() probes
 // the bulb during boot, and that sits higher in the file.
@@ -696,22 +704,29 @@ bool bulbFind() {
 bool bulbSend(const char *json) {
   if (!bulbIP[0] && !bulbFind()) return false;
 
+  // Close first: a link left half-open by a previous failure makes CIPSTART
+  // return ERROR outright, which is what UNLINK in the log was pointing at.
+  esp.print(F("AT+CIPCLOSE="));
+  esp.println(BULB_LINK);
+  waitFor("\n", 400);
+
   esp.print(F("AT+CIPSTART="));
   esp.print(BULB_LINK);
   esp.print(F(",\"TCP\",\""));
   esp.print(bulbIP);
   esp.print(F("\","));
   esp.println(BULB_PORT);
-  // A stale lease looks exactly like a dead bulb, so re-resolve once before
-  // giving up rather than staying broken until the next reboot.
-  if (!waitFor("OK", 6000)) { if (!BULB_IP[0]) bulbIP[0] = '\0'; return false; }
+  // Timeouts are deliberately short. Every millisecond spent here is a
+  // millisecond of incoming MQTT being read and thrown away.
+  // CONNECT is specific to this command; OK is emitted by everything.
+  if (!waitFor("CONNECT", 2500)) { if (!BULB_IP[0]) bulbIP[0] = '\0'; return false; }
 
   const uint16_t n = strlen(json);
   esp.print(F("AT+CIPSEND="));
   esp.print(BULB_LINK);
   esp.print(',');
   esp.println(n + 4);
-  if (!waitFor(">", 5000)) { closeConn(BULB_LINK); return false; }
+  if (!waitFor(">", 2000)) { closeConn(BULB_LINK); return false; }
 
   esp.write((uint8_t)0);                  // 4-byte big-endian length
   esp.write((uint8_t)0);
@@ -724,7 +739,7 @@ bool bulbSend(const char *json) {
     esp.write(key);
   }
 
-  const bool ok = waitFor("OK", 6000);
+  const bool ok = waitFor("SEND OK", 2500);
   closeConn(BULB_LINK);
   return ok;
 }
@@ -752,8 +767,16 @@ bool bulbOff() {
 void bulbPush() {
   bulbDirty = false;
   lastBulb = millis();
-  if (!currBrightness) { bulbOff(); return; }
-  bulbColour(bulbTint, constrain((uint16_t)currBrightness * 100 / MAX_BRIGHTNESS, 1, 100));
+
+  const bool ok = currBrightness
+    ? bulbColour(bulbTint, constrain((uint16_t)currBrightness * 100 / MAX_BRIGHTNESS, 1, 100))
+    : bulbOff();
+
+  if (ok) {
+    bulbFails = 0;
+  } else if (++bulbFails == BULB_MAX_FAILS) {
+    Serial.println(F("\nbulb not responding -- backing off, strip is unaffected"));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -995,7 +1018,9 @@ void loop() {
     // The bulb costs a TCP round trip, so it is pushed from the idle path and
     // rate limited -- never in front of an LED frame, never once per slider
     // step. Frames take priority; the bulb catches up when there is slack.
-    if (bulbDirty && millis() - lastBulb >= BULB_MIN_MS) { bulbPush(); return; }
+    const unsigned long bulbWait =
+      (bulbFails >= BULB_MAX_FAILS) ? BULB_RETRY_MS : BULB_MIN_MS;
+    if (bulbDirty && millis() - lastBulb >= bulbWait) { bulbPush(); return; }
 
     if (anim) {
       const unsigned long t = millis();
