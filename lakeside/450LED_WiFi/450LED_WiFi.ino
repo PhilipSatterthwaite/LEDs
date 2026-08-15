@@ -579,6 +579,7 @@ bool startWiFi() {
   } else {
     Serial.print(F("\n\nbulb at "));
     Serial.println(bulbIP);
+    drainEsp(400);
     if (bulbColour(CRGB::Red, 30)) Serial.println(F("\nbulb responded -- it should be red"));
     else                           Serial.println(F("\njoined but not answering on 9999"));
   }
@@ -664,6 +665,19 @@ bool espSend(uint8_t id, const uint8_t *data, uint16_t len) {
 // the next. It is obfuscation rather than encryption, but the bulb rejects
 // anything else.
 // ---------------------------------------------------------------------------
+// Reads until the line has been quiet for idleMs, discarding.
+//
+// CWLIF keeps streaming after bulbFind() has already matched, and issuing the
+// next command while it is still arriving gets "busy p..." and a silently
+// rejected command -- which then looks like the bulb refusing a connection.
+// Kept short: anything dropped here is incoming MQTT.
+void drainEsp(unsigned long idleMs) {
+  unsigned long last = millis();
+  while (millis() - last < idleMs) {
+    while (esp.available()) { esp.read(); last = millis(); }
+  }
+}
+
 // Asks the ESP which stations are on its AP and picks out the bulb by MAC.
 // AT+CWLIF answers one line per client as "<ip>,<mac>", so the lease is
 // authoritative -- no scanning, and a renewed address is picked up for free.
@@ -703,12 +717,14 @@ bool bulbFind() {
 
 bool bulbSend(const char *json) {
   if (!bulbIP[0] && !bulbFind()) return false;
+  drainEsp(350);        // let CWLIF's tail land before commanding again
 
   // Close first: a link left half-open by a previous failure makes CIPSTART
-  // return ERROR outright, which is what UNLINK in the log was pointing at.
+  // return ERROR outright. UNLINK here just means it was not open, which is
+  // the normal case and not an error.
   esp.print(F("AT+CIPCLOSE="));
   esp.println(BULB_LINK);
-  waitFor("\n", 400);
+  drainEsp(350);
 
   esp.print(F("AT+CIPSTART="));
   esp.print(BULB_LINK);
