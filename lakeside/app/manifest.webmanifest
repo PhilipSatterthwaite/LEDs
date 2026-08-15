@@ -2,7 +2,11 @@
   "name": "LEDs",
   "short_name": "LEDs",
   "description": "Controls for the 450-LED strip over MQTT",
-  "start_url": "./",
+
+  "//": "Android identifies an installed PWA by id (falling back to start_url) and caches the generated WebAPK against it. Renaming the app is invisible until that identity changes, so both carry a version marker -- bump it if a future rename sticks the same way.",
+  "id": "/LEDs/lakeside/app/?v=2",
+  "start_url": "./?v=2",
+
   "scope": "./",
   "display": "standalone",
   "background_color": "#0A0D12",
