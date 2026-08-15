@@ -107,8 +107,12 @@ CRGB leds[NUM_LEDS];
 // above 50 the color fades over the length of the strip.
 #define MAX_BRIGHTNESS 50
 
-int currBrightness = MAX_BRIGHTNESS;
-int savedBrightness = MAX_BRIGHTNESS;   // remembered across an off/on toggle
+// Boot state. Dim red rather than a full-brightness rainbow, so a power blip
+// or an accidental reset doesn't throw the whole strip to full output.
+#define BOOT_BRIGHTNESS 10
+
+int currBrightness = BOOT_BRIGHTNESS;
+int savedBrightness = BOOT_BRIGHTNESS;  // remembered across an off/on toggle
 uint8_t gHue = 0;
 
 // ---------------------------------------------------------------------------
@@ -170,7 +174,7 @@ const char PAGE[] PROGMEM =
   "h1{margin:0;font-size:15px;font-weight:650;letter-spacing:.22em;text-transform:uppercase}"
   ".c{font-size:12px;color:var(--d);letter-spacing:.14em}"
   "#st{height:52px;border-radius:var(--r);border:1px solid var(--l);transition:background .18s,filter .18s;"
-  "background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}"
+  "background:#FF0000}"
   ".sl{display:flex;justify-content:space-between;margin:8px 2px 20px;font-size:11px;"
   "color:var(--d);letter-spacing:.16em;text-transform:uppercase}"
   "h2{margin:0 0 10px;font-size:11px;font-weight:600;color:var(--d);letter-spacing:.2em;text-transform:uppercase}"
@@ -200,15 +204,15 @@ const char PAGE[] PROGMEM =
 
   "<header><h1>LEDs</h1><span class=c>450 &middot; WS2812B</span></header>"
   "<div id=st></div>"
-  "<div class=sl><span id=nw>Rainbow</span><span id=bl>50 / 50</span></div>"
+  "<div class=sl><span id=nw>Red</span><span id=bl>10 / 50</span></div>"
 
   "<div class='sc one'>"
-  "<button data-c=rb aria-pressed=true data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
+  "<button data-c=rb aria-pressed=false data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
   "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Rainbow</button>"
   "</div>"
 
   "<h2>Color</h2><div class=co>"
-  "<button class=sw style='--c:#FF0000' data-c=r  title=Red></button>"
+  "<button class=sw style='--c:#FF0000' data-c=r  title=Red aria-pressed=true></button>"
   "<button class=sw style='--c:#00FF00' data-c=g  title=Green></button>"
   "<button class=sw style='--c:#0000FF' data-c=b  title=Blue></button>"
   "<button class=sw style='--c:#FFFFFF' data-c=w  title=White></button>"
@@ -224,15 +228,15 @@ const char PAGE[] PROGMEM =
   "<h2>Fine colour</h2>"
   "<div class=pn><input type=color id=cp value='#FF8800'></div>"
 
-  "<div class=pn><div class=hd><span>Brightness</span><span id=bv>50</span></div>"
-  "<input type=range id=sr min=1 max=50 value=50></div>"
+  "<div class=pn><div class=hd><span>Brightness</span><span id=bv>10</span></div>"
+  "<input type=range id=sr min=1 max=50 value=10></div>"
 
   "<button id=pw data-c=off data-on=true>On</button>"
 
   "<script>"
   "var N={r:'Red',g:'Green',b:'Blue',w:'White',wm:'Warm',y:'Yellow',p:'Purple',"
   "lg:'Light green',lb:'Light blue',a:'Aqua',c:'Cobalt',rb:'Rainbow'};"
-  "var B=50,O=true,S=st,W=nw,V=bv,L=bl,P=pw;"
+  "var B=10,O=true,S=st,W=nw,V=bv,L=bl,P=pw;"
   // Dragging fires continuously; unthrottled it would flood a 115200 link and
   // stall the strip, since every show() blocks interrupts for ~13ms.
   "var T=0,Q,K;"
@@ -612,7 +616,7 @@ void setup() {
   FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS)
          .setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(currBrightness);
-  rainbow();
+  red();
   FastLED.show();
 
   esp.begin(ESP_BAUD);
