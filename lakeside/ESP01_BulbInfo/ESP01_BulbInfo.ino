@@ -49,6 +49,17 @@ bool sendAT(const __FlashStringHelper *cmd, const char *expect, unsigned long ms
   return waitFor(expect, ms);
 }
 
+// Reads until the line has been quiet for idleMs. A scan keeps streaming after
+// a match is found, and the ESP announces reconnections unprompted -- issuing
+// the next command while either is in flight makes every later waitFor match
+// the previous command's OK, which desyncs the whole exchange.
+void drain(unsigned long idleMs) {
+  unsigned long last = millis();
+  while (millis() - last < idleMs) {
+    while (Serial1.available()) { Serial.write(Serial1.read()); last = millis(); }
+  }
+}
+
 const char PROBE[] = "{\"system\":{\"get_sysinfo\":{}}}";
 
 // Scans and returns the first network that looks like a Kasa setup AP. The
@@ -143,6 +154,11 @@ void setup() {
   sendAT(F("ATE0"), "OK", 3000);
   sendAT(F("AT+CWMODE=1"), "OK", 3000);
 
+  // Saved credentials make the ESP rejoin on its own after a reset, and those
+  // announcements would land in the middle of the exchange below.
+  sendAT(F("AT+CWQAP"), "OK", 5000);
+  drain(1500);
+
   char ssid[48];
   if (BULB_AP[0]) {
     strncpy(ssid, BULB_AP, sizeof(ssid) - 1);
@@ -158,6 +174,8 @@ void setup() {
     }
   }
 
+  drain(1500);              // let the rest of the scan finish arriving
+
   Serial.print(F("\n\njoining \""));
   Serial.print(ssid);
   Serial.println(F("\" ..."));
@@ -167,10 +185,11 @@ void setup() {
   Serial1.print(F("\",\""));
   Serial1.print(F(BULB_AP_PASS));
   Serial1.println(F("\""));
-  if (!waitFor("OK", 25000)) {
+  if (!waitFor("WIFI GOT IP", 25000)) {
     Serial.println(F("\n!! could not join that network"));
     return;
   }
+  drain(1200);
 
   // Shows the gateway, which is the bulb itself. If it is not 192.168.0.1,
   // that address goes in BULB_SETUP_IP.
@@ -178,11 +197,15 @@ void setup() {
   sendAT(F("AT+CIPSTA?"), "OK", 4000);
 
   sendAT(F("AT+CIPMUX=0"), "OK", 3000);
+  drain(400);
 
   Serial1.print(F("AT+CIPSTART=\"TCP\",\""));
   Serial1.print(F(BULB_SETUP_IP));
   Serial1.println(F("\",9999"));
-  if (!waitFor("OK", 8000)) { Serial.println(F("\n!! bulb refused the connection")); return; }
+  // CONNECT belongs to this command; OK does not, and matching a stray one is
+  // what makes a failed connect look like a success.
+  if (!waitFor("CONNECT", 8000)) { Serial.println(F("\n!! bulb refused the connection")); return; }
+  drain(400);
 
   const uint16_t n = strlen(PROBE);
   Serial1.print(F("AT+CIPSEND="));

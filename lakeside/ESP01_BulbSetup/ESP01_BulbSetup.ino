@@ -52,6 +52,20 @@ bool sendAT(const __FlashStringHelper *cmd, const char *expect, unsigned long ms
   return waitFor(expect, ms);
 }
 
+// Reads until the line has been quiet for idleMs.
+//
+// Necessary because a scan keeps streaming after a match is found, and the ESP
+// also announces its own reconnections unprompted. Issuing the next command
+// while either is still arriving makes every following waitFor match the
+// PREVIOUS command's OK -- so CIPSTART appears to succeed, and the failure only
+// surfaces later as "link is not valid".
+void drain(unsigned long idleMs) {
+  unsigned long last = millis();
+  while (millis() - last < idleMs) {
+    while (Serial1.available()) { Serial.write(Serial1.read()); last = millis(); }
+  }
+}
+
 bool findBulbAP(char *out, uint8_t size) {
   Serial1.println(F("AT+CWLAP"));
   const unsigned long deadline = millis() + 25000;
@@ -151,6 +165,11 @@ void setup() {
   sendAT(F("ATE0"), "OK", 3000);
   sendAT(F("AT+CWMODE=1"), "OK", 3000);
 
+  // Saved credentials make the ESP rejoin servicenet on its own after a reset,
+  // and those announcements would land in the middle of the exchange below.
+  sendAT(F("AT+CWQAP"), "OK", 5000);
+  drain(1500);
+
   char ssid[48];
   if (BULB_AP[0]) {
     strncpy(ssid, BULB_AP, sizeof(ssid) - 1);
@@ -165,6 +184,8 @@ void setup() {
     }
   }
 
+  drain(1500);              // let the rest of the scan finish arriving
+
   Serial.print(F("\n\njoining \""));
   Serial.print(ssid);
   Serial.println(F("\" ..."));
@@ -172,14 +193,19 @@ void setup() {
   Serial1.print(F("AT+CWJAP=\""));
   Serial1.print(ssid);
   Serial1.println(F("\",\"\""));
-  if (!waitFor("OK", 25000)) { Serial.println(F("\n!! could not join the setup AP")); return; }
+  if (!waitFor("WIFI GOT IP", 25000)) { Serial.println(F("\n!! could not join the setup AP")); return; }
+  drain(1200);
 
   sendAT(F("AT+CIPMUX=0"), "OK", 3000);
+  drain(400);
 
   Serial1.print(F("AT+CIPSTART=\"TCP\",\""));
   Serial1.print(F(BULB_SETUP_IP));
   Serial1.println(F("\",9999"));
-  if (!waitFor("OK", 8000)) { Serial.println(F("\n!! bulb refused the connection")); return; }
+  // CONNECT is specific to this command; OK is not, and matching a stray one
+  // is exactly what produced "link is not valid" last time.
+  if (!waitFor("CONNECT", 8000)) { Serial.println(F("\n!! bulb refused the connection")); return; }
+  drain(400);
 
   char json[200];
   snprintf_P(json, sizeof(json),
