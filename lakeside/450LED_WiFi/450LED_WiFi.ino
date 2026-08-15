@@ -135,6 +135,65 @@ void lightBlue()  { solid(  0, 255, 255); }
 void aqua()       { solid(  0, 191, 255); }
 void cobalt()     { solid(  0,  71, 171); }
 
+// ---------------------------------------------------------------------------
+// Animations, lifted from the old DemoReel100 sketch. Each renders ONE frame;
+// the frame loop calls them and owns the show(), so nothing here blocks.
+// ---------------------------------------------------------------------------
+enum { A_NONE = 0, A_PULSE, A_SWEEP, A_CONFETTI, A_JUGGLE, A_GLITTER };
+
+uint8_t anim = A_NONE;
+unsigned long lastFrame = 0;
+unsigned long lastHue   = 0;
+
+// 20fps. Each show() holds interrupts off for ~13.5ms while 450 pixels clock
+// out, so this is a duty cycle as much as a frame rate -- see loop().
+#define FRAME_MS 50
+
+void addGlitter(fract8 chance) {
+  if (random8() < chance) leds[random16(NUM_LEDS)] += CRGB::White;
+}
+
+// Coloured stripes pulsing along the strip -- the effect from the old sketch.
+void bpm() {
+  const uint8_t bpmRate = 62;
+  CRGBPalette16 palette = PartyColors_p;
+  const uint8_t beat = beatsin8(bpmRate, 64, 255);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
+  }
+}
+
+void sinelon() {                      // a dot sweeping back and forth
+  fadeToBlackBy(leds, NUM_LEDS, 20);
+  leds[beatsin16(13, 0, NUM_LEDS - 1)] += CHSV(gHue, 255, 192);
+}
+
+void confetti() {                     // speckles that blink and fade
+  fadeToBlackBy(leds, NUM_LEDS, 10);
+  leds[random16(NUM_LEDS)] += CHSV(gHue + random8(64), 200, 255);
+}
+
+void juggle() {                       // eight dots weaving through each other
+  fadeToBlackBy(leds, NUM_LEDS, 20);
+  uint8_t dothue = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    leds[beatsin16(i + 7, 0, NUM_LEDS - 1)] |= CHSV(dothue, 200, 255);
+    dothue += 32;
+  }
+}
+
+void glitterRainbow() { rainbow(); addGlitter(80); }
+
+void renderFrame() {
+  switch (anim) {
+    case A_PULSE:    bpm();            break;
+    case A_SWEEP:    sinelon();        break;
+    case A_CONFETTI: confetti();       break;
+    case A_JUGGLE:   juggle();         break;
+    case A_GLITTER:  glitterRainbow(); break;
+  }
+}
+
 // Hex nibble, or 255 for anything that is not a hex digit.
 uint8_t nibble(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -179,6 +238,7 @@ const char PAGE[] PROGMEM =
   "color:var(--d);letter-spacing:.16em;text-transform:uppercase}"
   "h2{margin:0 0 10px;font-size:11px;font-weight:600;color:var(--d);letter-spacing:.2em;text-transform:uppercase}"
   ".sc{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:22px}"
+  ".sc button{font-size:12px}"
   ".sc button{display:flex;flex-direction:column;align-items:center;gap:9px;padding:13px 8px 11px;"
   "border:1px solid var(--l);border-radius:var(--r);background:var(--s);color:var(--t);font:inherit;font-size:13px}"
   ".sc i{display:block;width:100%;height:16px;border-radius:5px}"
@@ -206,9 +266,19 @@ const char PAGE[] PROGMEM =
   "<div id=st></div>"
   "<div class=sl><span id=nw>Red</span><span id=bl>10 / 50</span></div>"
 
-  "<div class='sc one'>"
+  "<h2>Scenes</h2><div class=sc>"
   "<button data-c=rb aria-pressed=false data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
   "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Rainbow</button>"
+  "<button data-c=pu aria-pressed=false data-bg='repeating-linear-gradient(90deg,#FF2D55 0 12px,#FFD60A 12px 24px,#30D158 24px 36px,#0A84FF 36px 48px)'>"
+  "<i style='background:repeating-linear-gradient(90deg,#FF2D55 0 8px,#FFD60A 8px 16px,#30D158 16px 24px,#0A84FF 24px 32px)'></i>Pulse</button>"
+  "<button data-c=sw aria-pressed=false data-bg='linear-gradient(90deg,#0A0D12 30%,#0A84FF 92%,#fff)'>"
+  "<i style='background:linear-gradient(90deg,#0A0D12 30%,#0A84FF 92%,#fff)'></i>Sweep</button>"
+  "<button data-c=cf aria-pressed=false data-bg='radial-gradient(circle 3px at 20% 45%,#FF2D55 99%,transparent),radial-gradient(circle 3px at 60% 60%,#FFD60A 99%,transparent),#0A0D12'>"
+  "<i style='background:radial-gradient(circle 2px at 25% 50%,#FF2D55 99%,transparent),radial-gradient(circle 2px at 65% 50%,#FFD60A 99%,transparent),#0A0D12'></i>Confetti</button>"
+  "<button data-c=jg aria-pressed=false data-bg='radial-gradient(circle 4px at 25% 50%,#FF2D55 99%,transparent),radial-gradient(circle 4px at 60% 50%,#30D158 99%,transparent),#0A0D12'>"
+  "<i style='background:radial-gradient(circle 3px at 28% 50%,#FF2D55 99%,transparent),radial-gradient(circle 3px at 68% 50%,#30D158 99%,transparent),#0A0D12'></i>Juggle</button>"
+  "<button data-c=gl aria-pressed=false data-bg='radial-gradient(circle 2px at 30% 40%,#fff 99%,transparent),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
+  "<i style='background:radial-gradient(circle 2px at 35% 45%,#fff 99%,transparent),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Glitter</button>"
   "</div>"
 
   "<h2>Color</h2><div class=co>"
@@ -231,11 +301,12 @@ const char PAGE[] PROGMEM =
   "<div class=pn><div class=hd><span>Brightness</span><span id=bv>10</span></div>"
   "<input type=range id=sr min=1 max=50 value=10></div>"
 
-  "<button id=pw data-c=off data-on=true>On</button>"
+  "<button id=pw data-on=true>On</button>"
 
   "<script>"
   "var N={r:'Red',g:'Green',b:'Blue',w:'White',wm:'Warm',y:'Yellow',p:'Purple',"
-  "lg:'Light green',lb:'Light blue',a:'Aqua',c:'Cobalt',rb:'Rainbow'};"
+  "lg:'Light green',lb:'Light blue',a:'Aqua',c:'Cobalt',rb:'Rainbow',"
+  "pu:'Pulse',sw:'Sweep',cf:'Confetti',jg:'Juggle',gl:'Glitter'};"
   "var B=10,O=true,S=st,W=nw,V=bv,L=bl,P=pw;"
   // Dragging fires continuously; unthrottled it would flood a 115200 link and
   // stall the strip, since every show() blocks interrupts for ~13ms.
@@ -251,8 +322,9 @@ const char PAGE[] PROGMEM =
   "S.style.background=bg;W.textContent=nm}"
   "document.body.addEventListener('click',function(e){"
   "var b=e.target.closest('[data-c]');if(!b)return;var c=b.dataset.c;go(c);"
-  "if(c=='off'){O=!O}"
-  "else{mark(b,b.dataset.bg||b.style.getPropertyValue('--c'),N[c]||c);O=true}u()});"
+  "mark(b,b.dataset.bg||b.style.getPropertyValue('--c'),N[c]||c);O=true;u()});"
+  // Explicit on/off, matching the app: a toggle re-sent would cancel itself.
+  "pw.addEventListener('click',function(){go(O?'off':'on');O=!O;u()});"
   "sr.addEventListener('input',function(){B=+sr.value;O=true;go('v'+B);u()});"
   "cp.addEventListener('input',function(){var v=cp.value;"
   "mark(null,v,v.toUpperCase());O=true;go('h'+v.slice(1));u()});"
@@ -439,18 +511,44 @@ bool espSend(uint8_t id, const uint8_t *data, uint16_t len) {
 // Returns true if the strip changed and needs a show().
 // ---------------------------------------------------------------------------
 bool applyCommand(const char *path) {
-  // hRRGGBB -- arbitrary colour from the wheel.
-  if (path[0] == 'h' && strlen(path) == 7) return applyHex(path);
+  // --- brightness and power: deliberately do NOT disturb a running animation,
+  // --- so you can dim or blank an effect without restarting it.
 
-  // v<n> -- absolute brightness, 1..MAX_BRIGHTNESS. Zero is deliberately not
-  // reachable here; only the power button turns the strip off, so dragging the
-  // slider to its bottom leaves the lights on at their dimmest.
+  // v<n> -- absolute brightness, 1..MAX_BRIGHTNESS. Zero is not reachable
+  // here; only the power button turns the strip off, so bottoming out the
+  // slider still leaves the lights on at their dimmest.
   if (path[0] == 'v' && path[1]) {
     const int n = constrain(atoi(path + 1), 1, MAX_BRIGHTNESS);
     currBrightness = savedBrightness = n;
     FastLED.setBrightness(n);
     return true;
   }
+
+  // Explicit rather than a toggle: commands get re-sent to survive the serial
+  // blackout during show(), and a toggle sent twice cancels itself out.
+  if (!strcmp(path, "off")) {
+    if (currBrightness) savedBrightness = currBrightness;
+    currBrightness = 0;
+    FastLED.setBrightness(0);
+    return true;
+  }
+  if (!strcmp(path, "on")) {
+    currBrightness = savedBrightness ? savedBrightness : BOOT_BRIGHTNESS;
+    FastLED.setBrightness(currBrightness);
+    return true;
+  }
+
+  // --- animations: the frame loop takes over from here.
+  if (!strcmp(path, "pu")) { anim = A_PULSE;    renderFrame(); return true; }
+  if (!strcmp(path, "sw")) { anim = A_SWEEP;    fill_solid(leds, NUM_LEDS, CRGB::Black); return true; }
+  if (!strcmp(path, "cf")) { anim = A_CONFETTI; fill_solid(leds, NUM_LEDS, CRGB::Black); return true; }
+  if (!strcmp(path, "jg")) { anim = A_JUGGLE;   fill_solid(leds, NUM_LEDS, CRGB::Black); return true; }
+  if (!strcmp(path, "gl")) { anim = A_GLITTER;  renderFrame(); return true; }
+
+  // --- everything below is a static scene, so it stops any animation first.
+  anim = A_NONE;
+
+  if (path[0] == 'h' && strlen(path) == 7) return applyHex(path);
 
   if (!strcmp(path, "rb")) { rainbow();    return true; }
   if (!strcmp(path, "wm")) { warm();       return true; }
@@ -465,16 +563,6 @@ bool applyCommand(const char *path) {
   if (!strcmp(path, "a"))  { aqua();       return true; }
   if (!strcmp(path, "c"))  { cobalt();     return true; }
 
-  if (!strcmp(path, "off")) {
-    if (currBrightness == 0) {
-      currBrightness = savedBrightness ? savedBrightness : MAX_BRIGHTNESS;
-    } else {
-      savedBrightness = currBrightness;
-      currBrightness = 0;
-    }
-    FastLED.setBrightness(currBrightness);
-    return true;
-  }
   return false;
 }
 
@@ -643,9 +731,25 @@ void loop() {
   }
 #endif
 
+  // Commit to a read only once bytes have actually arrived. Polling readIPD on
+  // a short timeout would abandon half-received frames and desync the stream;
+  // polling it on a long one would starve the animation of frames.
+  if (!esp.available()) {
+    if (anim) {
+      const unsigned long t = millis();
+      if (t - lastHue >= 20) { lastHue = t; gHue++; }
+      if (t - lastFrame >= FRAME_MS) {
+        lastFrame = t;
+        renderFrame();
+        FastLED.show();
+      }
+    }
+    return;
+  }
+
   char buf[192];
   uint16_t len = 0;
-  const int id = readIPD(buf, sizeof(buf), &len, 200);
+  const int id = readIPD(buf, sizeof(buf), &len, 300);
   if (id < 0) return;
 
   bool needsShow = false;
