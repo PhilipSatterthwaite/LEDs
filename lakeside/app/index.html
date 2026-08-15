@@ -55,7 +55,7 @@ h1{margin:0;font-size:15px;font-weight:650;letter-spacing:.22em;text-transform:u
 h2{margin:0 0 10px;font-size:11px;font-weight:600;color:var(--d);
   letter-spacing:.2em;text-transform:uppercase}
 
-.sc{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:22px}
+.sc{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:22px}
 .sc button{display:flex;flex-direction:column;align-items:center;gap:9px;width:100%;
   padding:13px 8px 11px;border:1px solid var(--l);border-radius:var(--r);
   background:var(--s);color:var(--t);font:inherit;font-size:13px}
@@ -122,31 +122,20 @@ body[data-ready=false] #pw{opacity:.4;pointer-events:none}
 <div id="st"></div>
 <div class="sl"><span id="nw">Red</span><span id="bl">10 / 50</span></div>
 
-<h2>Scenes</h2>
+<div class="pn">
+  <div class="hd"><span>Brightness</span><span id="bv">10</span></div>
+  <input type="range" id="sr" min="1" max="50" value="10" aria-label="Brightness">
+</div>
+
+<h2>Moving</h2>
 <div class="sc">
-  <button data-c="rb" aria-pressed="false"
+  <button data-c="cy" aria-pressed="false"
     data-bg="linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)">
-    <i style="background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></i>Rainbow</button>
+    <i style="background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></i>Cycle</button>
 
-  <button data-c="pu" aria-pressed="false"
-    data-bg="repeating-linear-gradient(90deg,#FF2D55 0 12px,#FFD60A 12px 24px,#30D158 24px 36px,#0A84FF 36px 48px)">
-    <i style="background:repeating-linear-gradient(90deg,#FF2D55 0 8px,#FFD60A 8px 16px,#30D158 16px 24px,#0A84FF 24px 32px)"></i>Pulse</button>
-
-  <button data-c="sw" aria-pressed="false"
-    data-bg="linear-gradient(90deg,#0A0D12 30%,#0A84FF 92%,#fff)">
-    <i style="background:linear-gradient(90deg,#0A0D12 30%,#0A84FF 92%,#fff)"></i>Sweep</button>
-
-  <button data-c="cf" aria-pressed="false"
-    data-bg="radial-gradient(circle 3px at 12% 40%,#FF2D55 99%,transparent),radial-gradient(circle 3px at 38% 65%,#FFD60A 99%,transparent),radial-gradient(circle 3px at 64% 30%,#30D158 99%,transparent),radial-gradient(circle 3px at 86% 60%,#BF5AF2 99%,transparent),#0A0D12">
-    <i style="background:radial-gradient(circle 2px at 15% 50%,#FF2D55 99%,transparent),radial-gradient(circle 2px at 45% 50%,#FFD60A 99%,transparent),radial-gradient(circle 2px at 72% 50%,#30D158 99%,transparent),#0A0D12"></i>Confetti</button>
-
-  <button data-c="jg" aria-pressed="false"
-    data-bg="radial-gradient(circle 4px at 20% 50%,#FF2D55 99%,transparent),radial-gradient(circle 4px at 45% 50%,#30D158 99%,transparent),radial-gradient(circle 4px at 70% 50%,#0A84FF 99%,transparent),#0A0D12">
-    <i style="background:radial-gradient(circle 3px at 22% 50%,#FF2D55 99%,transparent),radial-gradient(circle 3px at 50% 50%,#30D158 99%,transparent),radial-gradient(circle 3px at 78% 50%,#0A84FF 99%,transparent),#0A0D12"></i>Juggle</button>
-
-  <button data-c="gl" aria-pressed="false"
-    data-bg="radial-gradient(circle 2px at 22% 35%,#fff 99%,transparent),radial-gradient(circle 2px at 63% 68%,#fff 99%,transparent),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)">
-    <i style="background:radial-gradient(circle 2px at 30% 40%,#fff 99%,transparent),radial-gradient(circle 2px at 70% 60%,#fff 99%,transparent),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></i>Glitter</button>
+  <button data-c="wo" aria-pressed="false"
+    data-bg="radial-gradient(circle 22px at 72% 50%,#fff,transparent 70%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)">
+    <i style="background:radial-gradient(circle 9px at 72% 50%,#fff,transparent 70%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></i>Worm</button>
 </div>
 
 <h2>Color</h2>
@@ -162,17 +151,14 @@ body[data-ready=false] #pw{opacity:.4;pointer-events:none}
   <button class="sw" style="--c:#00FFFF" data-c="lb" aria-label="Light blue"  aria-pressed="false"></button>
   <button class="sw" style="--c:#00BFFF" data-c="a"  aria-label="Aqua"        aria-pressed="false"></button>
   <button class="sw" style="--c:#0047AB" data-c="c"  aria-label="Cobalt"      aria-pressed="false"></button>
+  <button class="sw" data-c="rb" aria-label="Rainbow" aria-pressed="false"
+    style="--c:#FF3B30;background:conic-gradient(#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></button>
 </div>
 
 <h2>Fine colour</h2>
 <div class="wrap">
   <div id="wheel" role="application" aria-label="Colour wheel"></div>
   <div id="pin"></div>
-</div>
-
-<div class="pn">
-  <div class="hd"><span>Brightness</span><span id="bv">10</span></div>
-  <input type="range" id="sr" min="1" max="50" value="10" aria-label="Brightness">
 </div>
 
 <button id="pw" data-on="true">On</button>
@@ -319,8 +305,7 @@ function flush(){
 // --- UI -------------------------------------------------------------------
 var NAMES = {r:'Red', g:'Green', b:'Blue', w:'White', wm:'Warm', y:'Yellow',
              p:'Purple', lg:'Light green', lb:'Light blue', a:'Aqua',
-             c:'Cobalt', rb:'Rainbow',
-             pu:'Pulse', sw:'Sweep', cf:'Confetti', jg:'Juggle', gl:'Glitter'};
+             c:'Cobalt', rb:'Rainbow', cy:'Cycle', wo:'Worm'};
 
 var B = BOOTB, ON = true;
 var strip = document.getElementById('st'),

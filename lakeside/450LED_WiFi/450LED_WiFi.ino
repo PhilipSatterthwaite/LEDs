@@ -39,10 +39,12 @@
 // drive the strip. CHANGE THE RANDOM SUFFIX below to something only you have,
 // and keep it out of screenshots. Fine for lights, not for anything else.
 //
-// Phone side: any MQTT app (IoT MQTT Panel on Android, MQTTool on iOS).
-// Point it at the same broker on port 1883 and publish to MQTT_TOPIC.
-// Payloads are the same short codes the web buttons use: rb, wm, r, g, b, w,
-// y, p, lg, lb, a, c, x, off, up, dn.
+// Payloads are the short codes the web buttons use:
+//   colours    r g b w wm y p lg lb a c rb
+//   moving     cy (cycle)  wo (worm)
+//   hRRGGBB    arbitrary colour
+//   v<n>       brightness, 1..MAX_BRIGHTNESS
+//   on / off   explicit, not a toggle -- commands are re-sent, see the app
 // ---------------------------------------------------------------------------
 #define MQTT_ENABLE 1
 #define MQTT_HOST   "broker.hivemq.com"
@@ -139,58 +141,54 @@ void cobalt()     { solid(  0,  71, 171); }
 // Animations, lifted from the old DemoReel100 sketch. Each renders ONE frame;
 // the frame loop calls them and owns the show(), so nothing here blocks.
 // ---------------------------------------------------------------------------
-enum { A_NONE = 0, A_PULSE, A_SWEEP, A_CONFETTI, A_JUGGLE, A_GLITTER };
+enum { A_NONE = 0, A_CYCLE, A_WORM };
 
 uint8_t anim = A_NONE;
 unsigned long lastFrame = 0;
-unsigned long lastHue   = 0;
 
 // 20fps. Each show() holds interrupts off for ~13.5ms while 450 pixels clock
 // out, so this is a duty cycle as much as a frame rate -- see loop().
 #define FRAME_MS 50
 
-void addGlitter(fract8 chance) {
-  if (random8() < chance) leds[random16(NUM_LEDS)] += CRGB::White;
+// --- Cycle: whole strip one colour, drifting through the spectrum. ---------
+// 8.8 fixed point so the hue can crawl slower than one step per frame; at
+// 20fps this works out to a full loop roughly every 30 seconds.
+uint16_t cycleHue = 0;
+#define CYCLE_STEP 110
+
+void cycle() {
+  cycleHue += CYCLE_STEP;
+  fill_solid(leds, NUM_LEDS, CHSV(cycleHue >> 8, 255, 255));
 }
 
-// Coloured stripes pulsing along the strip -- the effect from the old sketch.
-void bpm() {
-  const uint8_t bpmRate = 62;
-  CRGBPalette16 palette = PartyColors_p;
-  const uint8_t beat = beatsin8(bpmRate, 64, 255);
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = ColorFromPalette(palette, gHue + (i * 2), beat - gHue + (i * 10));
+// --- Worm: a static rainbow with a bright head running along it. -----------
+// The tail adds white rather than replacing colour, so the underlying rainbow
+// still reads through the pulse instead of being wiped out by it.
+int wormPos = 0;
+#define WORM_LEN   28     // pixels from head to fully faded tail
+#define WORM_SPEED 6      // pixels per frame -- ~3.5s end to end at 20fps
+#define WORM_PEAK  200    // brightness added at the head, 0-255
+
+void worm() {
+  fill_rainbow(leds, NUM_LEDS, 0, 7);
+
+  for (int i = 0; i < WORM_LEN; i++) {
+    const int p = wormPos - i;
+    if (p < 0 || p >= NUM_LEDS) continue;
+    // Squared falloff: a sharp head with a long, soft trail behind it.
+    const uint16_t f = (uint16_t)(WORM_LEN - i) * (WORM_LEN - i);
+    const uint8_t boost = (uint32_t)f * WORM_PEAK / ((uint16_t)WORM_LEN * WORM_LEN);
+    leds[p] += CRGB(boost, boost, boost);
   }
-}
 
-void sinelon() {                      // a dot sweeping back and forth
-  fadeToBlackBy(leds, NUM_LEDS, 20);
-  leds[beatsin16(13, 0, NUM_LEDS - 1)] += CHSV(gHue, 255, 192);
+  wormPos += WORM_SPEED;
+  if (wormPos > NUM_LEDS + WORM_LEN) wormPos = 0;
 }
-
-void confetti() {                     // speckles that blink and fade
-  fadeToBlackBy(leds, NUM_LEDS, 10);
-  leds[random16(NUM_LEDS)] += CHSV(gHue + random8(64), 200, 255);
-}
-
-void juggle() {                       // eight dots weaving through each other
-  fadeToBlackBy(leds, NUM_LEDS, 20);
-  uint8_t dothue = 0;
-  for (uint8_t i = 0; i < 8; i++) {
-    leds[beatsin16(i + 7, 0, NUM_LEDS - 1)] |= CHSV(dothue, 200, 255);
-    dothue += 32;
-  }
-}
-
-void glitterRainbow() { rainbow(); addGlitter(80); }
 
 void renderFrame() {
   switch (anim) {
-    case A_PULSE:    bpm();            break;
-    case A_SWEEP:    sinelon();        break;
-    case A_CONFETTI: confetti();       break;
-    case A_JUGGLE:   juggle();         break;
-    case A_GLITTER:  glitterRainbow(); break;
+    case A_CYCLE: cycle(); break;
+    case A_WORM:  worm();  break;
   }
 }
 
@@ -237,8 +235,7 @@ const char PAGE[] PROGMEM =
   ".sl{display:flex;justify-content:space-between;margin:8px 2px 20px;font-size:11px;"
   "color:var(--d);letter-spacing:.16em;text-transform:uppercase}"
   "h2{margin:0 0 10px;font-size:11px;font-weight:600;color:var(--d);letter-spacing:.2em;text-transform:uppercase}"
-  ".sc{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:22px}"
-  ".sc button{font-size:12px}"
+  ".sc{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:22px}"
   ".sc button{display:flex;flex-direction:column;align-items:center;gap:9px;padding:13px 8px 11px;"
   "border:1px solid var(--l);border-radius:var(--r);background:var(--s);color:var(--t);font:inherit;font-size:13px}"
   ".sc i{display:block;width:100%;height:16px;border-radius:5px}"
@@ -266,19 +263,14 @@ const char PAGE[] PROGMEM =
   "<div id=st></div>"
   "<div class=sl><span id=nw>Red</span><span id=bl>10 / 50</span></div>"
 
-  "<h2>Scenes</h2><div class=sc>"
-  "<button data-c=rb aria-pressed=false data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
-  "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Rainbow</button>"
-  "<button data-c=pu aria-pressed=false data-bg='repeating-linear-gradient(90deg,#FF2D55 0 12px,#FFD60A 12px 24px,#30D158 24px 36px,#0A84FF 36px 48px)'>"
-  "<i style='background:repeating-linear-gradient(90deg,#FF2D55 0 8px,#FFD60A 8px 16px,#30D158 16px 24px,#0A84FF 24px 32px)'></i>Pulse</button>"
-  "<button data-c=sw aria-pressed=false data-bg='linear-gradient(90deg,#0A0D12 30%,#0A84FF 92%,#fff)'>"
-  "<i style='background:linear-gradient(90deg,#0A0D12 30%,#0A84FF 92%,#fff)'></i>Sweep</button>"
-  "<button data-c=cf aria-pressed=false data-bg='radial-gradient(circle 3px at 20% 45%,#FF2D55 99%,transparent),radial-gradient(circle 3px at 60% 60%,#FFD60A 99%,transparent),#0A0D12'>"
-  "<i style='background:radial-gradient(circle 2px at 25% 50%,#FF2D55 99%,transparent),radial-gradient(circle 2px at 65% 50%,#FFD60A 99%,transparent),#0A0D12'></i>Confetti</button>"
-  "<button data-c=jg aria-pressed=false data-bg='radial-gradient(circle 4px at 25% 50%,#FF2D55 99%,transparent),radial-gradient(circle 4px at 60% 50%,#30D158 99%,transparent),#0A0D12'>"
-  "<i style='background:radial-gradient(circle 3px at 28% 50%,#FF2D55 99%,transparent),radial-gradient(circle 3px at 68% 50%,#30D158 99%,transparent),#0A0D12'></i>Juggle</button>"
-  "<button data-c=gl aria-pressed=false data-bg='radial-gradient(circle 2px at 30% 40%,#fff 99%,transparent),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
-  "<i style='background:radial-gradient(circle 2px at 35% 45%,#fff 99%,transparent),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Glitter</button>"
+  "<div class=pn><div class=hd><span>Brightness</span><span id=bv>10</span></div>"
+  "<input type=range id=sr min=1 max=50 value=10></div>"
+
+  "<h2>Moving</h2><div class=sc>"
+  "<button data-c=cy aria-pressed=false data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
+  "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Cycle</button>"
+  "<button data-c=wo aria-pressed=false data-bg='radial-gradient(circle 22px at 72% 50%,#fff,transparent 70%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
+  "<i style='background:radial-gradient(circle 9px at 72% 50%,#fff,transparent 70%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Worm</button>"
   "</div>"
 
   "<h2>Color</h2><div class=co>"
@@ -293,20 +285,19 @@ const char PAGE[] PROGMEM =
   "<button class=sw style='--c:#00FFFF' data-c=lb title='Light blue'></button>"
   "<button class=sw style='--c:#00BFFF' data-c=a  title=Aqua></button>"
   "<button class=sw style='--c:#0047AB' data-c=c  title=Cobalt></button>"
+  "<button class=sw data-c=rb title=Rainbow "
+  "style='--c:#FF3B30;background:conic-gradient(#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></button>"
   "</div>"
 
   "<h2>Fine colour</h2>"
   "<div class=pn><input type=color id=cp value='#FF8800'></div>"
-
-  "<div class=pn><div class=hd><span>Brightness</span><span id=bv>10</span></div>"
-  "<input type=range id=sr min=1 max=50 value=10></div>"
 
   "<button id=pw data-on=true>On</button>"
 
   "<script>"
   "var N={r:'Red',g:'Green',b:'Blue',w:'White',wm:'Warm',y:'Yellow',p:'Purple',"
   "lg:'Light green',lb:'Light blue',a:'Aqua',c:'Cobalt',rb:'Rainbow',"
-  "pu:'Pulse',sw:'Sweep',cf:'Confetti',jg:'Juggle',gl:'Glitter'};"
+  "cy:'Cycle',wo:'Worm'};"
   "var B=10,O=true,S=st,W=nw,V=bv,L=bl,P=pw;"
   // Dragging fires continuously; unthrottled it would flood a 115200 link and
   // stall the strip, since every show() blocks interrupts for ~13ms.
@@ -539,11 +530,8 @@ bool applyCommand(const char *path) {
   }
 
   // --- animations: the frame loop takes over from here.
-  if (!strcmp(path, "pu")) { anim = A_PULSE;    renderFrame(); return true; }
-  if (!strcmp(path, "sw")) { anim = A_SWEEP;    fill_solid(leds, NUM_LEDS, CRGB::Black); return true; }
-  if (!strcmp(path, "cf")) { anim = A_CONFETTI; fill_solid(leds, NUM_LEDS, CRGB::Black); return true; }
-  if (!strcmp(path, "jg")) { anim = A_JUGGLE;   fill_solid(leds, NUM_LEDS, CRGB::Black); return true; }
-  if (!strcmp(path, "gl")) { anim = A_GLITTER;  renderFrame(); return true; }
+  if (!strcmp(path, "cy")) { anim = A_CYCLE; renderFrame(); return true; }
+  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0; renderFrame(); return true; }
 
   // --- everything below is a static scene, so it stops any animation first.
   anim = A_NONE;
@@ -737,7 +725,6 @@ void loop() {
   if (!esp.available()) {
     if (anim) {
       const unsigned long t = millis();
-      if (t - lastHue >= 20) { lastHue = t; gHue++; }
       if (t - lastFrame >= FRAME_MS) {
         lastFrame = t;
         renderFrame();
