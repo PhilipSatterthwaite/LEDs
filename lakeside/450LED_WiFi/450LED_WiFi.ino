@@ -58,6 +58,28 @@
 #define MQTT_LINK   4
 
 // ---------------------------------------------------------------------------
+// TP-Link Kasa KL125 -- the strip mirrors its colour to the bulb.
+//
+// Find the address in the Kasa app: the device, then the gear icon, Device
+// Info, IP Address. Leave BULB_IP empty to disable the whole feature.
+//
+// Both the ESP and the bulb must be on the same network AND that network has
+// to permit client-to-client traffic. Campus WiFi frequently does not -- it is
+// the same isolation that stopped your phone reaching the ESP directly -- so
+// the probe at boot reports whether this works before anything depends on it.
+//
+// A DHCP lease can move; if the bulb stops responding, re-check the app. The
+// Kasa app can also reserve the address under device settings.
+// ---------------------------------------------------------------------------
+#define BULB_IP     ""          // e.g. "10.8.251.160"
+#define BULB_PORT   9999
+#define BULB_LINK   3
+
+// Each update opens a TCP connection, so it costs a few hundred ms. Well below
+// the command rate the sliders produce, hence the rate limit below.
+#define BULB_MIN_MS 700
+
+// ---------------------------------------------------------------------------
 // ESP-01 link -- Mega hardware UART 1
 //
 // Signals -- both direct, no external level shifting:
@@ -116,6 +138,12 @@ CRGB leds[NUM_LEDS];
 int currBrightness = BOOT_BRIGHTNESS;
 int savedBrightness = BOOT_BRIGHTNESS;  // remembered across an off/on toggle
 uint8_t gHue = 0;
+
+// Colour mirrored to the Kasa bulb, always at full value -- brightness is
+// applied separately, since the bulb has its own scale.
+CRGB bulbTint = CRGB::Red;
+bool bulbDirty = false;
+unsigned long lastBulb = 0;
 
 // ---------------------------------------------------------------------------
 // Patterns
@@ -193,6 +221,11 @@ void cycle() {
   cycleHue += CYCLE_STEP;
   fill_solid(leds, NUM_LEDS, CHSV(cycleHue >> 8, 255, 255));
   for (int i = 0; i < NUM_LEDS; i++) scalePixel(i, currBrightness);
+
+  // Let the bulb drift along with the strip. Each bulb update costs a TCP
+  // round trip, so it samples the hue rather than tracking every frame.
+  bulbTint = CHSV(cycleHue >> 8, 255, 255);
+  if (millis() - lastBulb > 3000) bulbDirty = true;
 }
 
 // --- Worm: a brighter pulse running along the rainbow. ---------------------
@@ -513,6 +546,18 @@ bool startWiFi() {
   if (!sendAT(F("AT+CIPMUX=1"), "OK", 3000))      { Serial.println(F("\n!! CIPMUX failed")); return false; }
   if (!sendAT(F("AT+CIPSERVER=1,80"), "OK", 3000)){ Serial.println(F("\n!! CIPSERVER failed")); return false; }
 
+  // Answers the question everything else depends on: can the ESP actually
+  // reach the bulb, or does the network isolate its clients from each other?
+  Serial.println(F("\n-- kasa bulb --"));
+  if (!BULB_IP[0]) {
+    Serial.println(F("BULB_IP not set -- Kasa app > device > gear > Device Info"));
+  } else if (bulbColour(CRGB::Red, 30)) {
+    Serial.print(F("\nbulb reachable at "));
+    Serial.println(F(BULB_IP));
+  } else {
+    Serial.println(F("\nno reply -- wrong IP, different subnet, or client isolation"));
+  }
+
   Serial.println(F("\nserver up on port 80"));
   Serial.print(F("fallback: join \""));
   Serial.print(F(AP_SSID));
@@ -587,6 +632,75 @@ bool espSend(uint8_t id, const uint8_t *data, uint16_t len) {
 }
 
 // ---------------------------------------------------------------------------
+// Kasa bulb
+//
+// The wire format is a 4-byte big-endian length followed by JSON through an
+// XOR autokey stream seeded at 0xAB: each ciphertext byte becomes the key for
+// the next. It is obfuscation rather than encryption, but the bulb rejects
+// anything else.
+// ---------------------------------------------------------------------------
+bool bulbSend(const char *json) {
+  if (!BULB_IP[0]) return false;
+
+  esp.print(F("AT+CIPSTART="));
+  esp.print(BULB_LINK);
+  esp.print(F(",\"TCP\",\""));
+  esp.print(F(BULB_IP));
+  esp.print(F("\","));
+  esp.println(BULB_PORT);
+  if (!waitFor("OK", 6000)) return false;
+
+  const uint16_t n = strlen(json);
+  esp.print(F("AT+CIPSEND="));
+  esp.print(BULB_LINK);
+  esp.print(',');
+  esp.println(n + 4);
+  if (!waitFor(">", 5000)) { closeConn(BULB_LINK); return false; }
+
+  esp.write((uint8_t)0);                  // 4-byte big-endian length
+  esp.write((uint8_t)0);
+  esp.write((uint8_t)(n >> 8));
+  esp.write((uint8_t)(n & 0xFF));
+
+  uint8_t key = 0xAB;
+  for (uint16_t i = 0; i < n; i++) {
+    key ^= (uint8_t)json[i];              // key becomes the byte just sent
+    esp.write(key);
+  }
+
+  const bool ok = waitFor("OK", 6000);
+  closeConn(BULB_LINK);
+  return ok;
+}
+
+bool bulbColour(CRGB c, uint8_t pct) {
+  const CHSV hsv = rgb2hsv_approximate(c);
+  char json[210];
+  snprintf_P(json, sizeof(json),
+    PSTR("{\"smartlife.iot.smartbulb.lightingservice\":{\"transition_light_state\":"
+         "{\"ignore_default\":1,\"on_off\":1,\"hue\":%u,\"saturation\":%u,"
+         "\"color_temp\":0,\"brightness\":%u,\"transition_period\":400}}}"),
+    (unsigned)((uint16_t)hsv.h * 360 / 255),
+    (unsigned)((uint16_t)hsv.s * 100 / 255),
+    (unsigned)pct);
+  return bulbSend(json);
+}
+
+bool bulbOff() {
+  return bulbSend("{\"smartlife.iot.smartbulb.lightingservice\":"
+                  "{\"transition_light_state\":{\"on_off\":0,\"transition_period\":400}}}");
+}
+
+// Pushes the current scene to the bulb. Called from the idle path in loop() so
+// it never sits in front of an LED frame.
+void bulbPush() {
+  bulbDirty = false;
+  lastBulb = millis();
+  if (!currBrightness) { bulbOff(); return; }
+  bulbColour(bulbTint, constrain((uint16_t)currBrightness * 100 / MAX_BRIGHTNESS, 1, 100));
+}
+
+// ---------------------------------------------------------------------------
 // Command dispatch. `path` is the URL path with the leading slash stripped.
 // Returns true if the strip changed and needs a show().
 // ---------------------------------------------------------------------------
@@ -601,6 +715,7 @@ bool applyCommand(const char *path) {
     const int n = constrain(atoi(path + 1), 1, MAX_BRIGHTNESS);
     currBrightness = savedBrightness = n;
     applyBrightness();
+    bulbDirty = true;
     return true;
   }
 
@@ -610,39 +725,46 @@ bool applyCommand(const char *path) {
     if (currBrightness) savedBrightness = currBrightness;
     currBrightness = 0;
     applyBrightness();
+    bulbDirty = true;
     return true;
   }
   if (!strcmp(path, "on")) {
     currBrightness = savedBrightness ? savedBrightness : BOOT_BRIGHTNESS;
     applyBrightness();
+    bulbDirty = true;
     return true;
   }
 
-  // --- animations: the frame loop takes over from here.
-  if (!strcmp(path, "cy")) { anim = A_CYCLE; applyBrightness(); renderFrame(); return true; }
-  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0;  applyBrightness(); renderFrame(); return true; }
-  if (!strcmp(path, "w4")) { anim = A_QUAD;  quadReset(); applyBrightness(); renderFrame(); return true; }
+  // --- animations: the frame loop takes over from here. The bulb cannot
+  // --- animate, so it holds the scene's representative colour; cycle updates
+  // --- bulbTint per frame so the bulb drifts along with the strip.
+  if (!strcmp(path, "cy")) { anim = A_CYCLE; applyBrightness(); renderFrame(); bulbDirty = true; return true; }
+  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0;  applyBrightness(); renderFrame(); bulbTint = CHSV(0, 255, 255); bulbDirty = true; return true; }
+  if (!strcmp(path, "w4")) { anim = A_QUAD;  quadReset(); applyBrightness(); renderFrame(); bulbTint = CHSV(0, 255, 255); bulbDirty = true; return true; }
 
   // --- everything below is a static scene, so it stops any animation first.
   anim = A_NONE;
   applyBrightness();
 
-  if (path[0] == 'h' && strlen(path) == 7) return applyHex(path);
+  bool ok = false;
+  if (path[0] == 'h' && strlen(path) == 7) ok = applyHex(path);
+  else if (!strcmp(path, "rb")) { rainbow();    ok = true; }
+  else if (!strcmp(path, "wm")) { warm();       ok = true; }
+  else if (!strcmp(path, "r"))  { red();        ok = true; }
+  else if (!strcmp(path, "g"))  { green();      ok = true; }
+  else if (!strcmp(path, "b"))  { blue();       ok = true; }
+  else if (!strcmp(path, "w"))  { white();      ok = true; }
+  else if (!strcmp(path, "y"))  { yellow();     ok = true; }
+  else if (!strcmp(path, "p"))  { purple();     ok = true; }
+  else if (!strcmp(path, "lg")) { lightGreen(); ok = true; }
+  else if (!strcmp(path, "lb")) { lightBlue();  ok = true; }
+  else if (!strcmp(path, "a"))  { aqua();       ok = true; }
+  else if (!strcmp(path, "c"))  { cobalt();     ok = true; }
 
-  if (!strcmp(path, "rb")) { rainbow();    return true; }
-  if (!strcmp(path, "wm")) { warm();       return true; }
-  if (!strcmp(path, "r"))  { red();        return true; }
-  if (!strcmp(path, "g"))  { green();      return true; }
-  if (!strcmp(path, "b"))  { blue();       return true; }
-  if (!strcmp(path, "w"))  { white();      return true; }
-  if (!strcmp(path, "y"))  { yellow();     return true; }
-  if (!strcmp(path, "p"))  { purple();     return true; }
-  if (!strcmp(path, "lg")) { lightGreen(); return true; }
-  if (!strcmp(path, "lb")) { lightBlue();  return true; }
-  if (!strcmp(path, "a"))  { aqua();       return true; }
-  if (!strcmp(path, "c"))  { cobalt();     return true; }
-
-  return false;
+  // Static scenes leave leds[] at full value -- the global scaler applies at
+  // show() -- so the first pixel is the colour to mirror to the bulb.
+  if (ok) { bulbTint = leds[0]; bulbDirty = true; }
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +936,11 @@ void loop() {
   // a short timeout would abandon half-received frames and desync the stream;
   // polling it on a long one would starve the animation of frames.
   if (!esp.available()) {
+    // The bulb costs a TCP round trip, so it is pushed from the idle path and
+    // rate limited -- never in front of an LED frame, never once per slider
+    // step. Frames take priority; the bulb catches up when there is slack.
+    if (bulbDirty && millis() - lastBulb >= BULB_MIN_MS) { bulbPush(); return; }
+
     if (anim) {
       const unsigned long t = millis();
       if (t - lastFrame >= FRAME_MS) {
