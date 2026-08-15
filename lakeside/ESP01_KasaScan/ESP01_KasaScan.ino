@@ -16,12 +16,15 @@
 #define WIFI_SSID  "servicenet"
 #define WIFI_PASS  ""             // open network
 
-// Networks that drop broadcast between clients often still pass unicast, so a
-// silent broadcast is not the end of it. The sweep below sends the same probe
-// to every address individually. It runs automatically -- over UDP there is no
-// handshake to wait out, so the whole /24 takes about half a minute rather
-// than the many minutes a TCP connect sweep would.
-#define SWEEP_PREFIX "10.8.251."  // first three octets of the ESP's own STAIP
+// Sweeps one /24 in about half a minute -- UDP has no handshake to wait out.
+//
+// BUT: servicenet's netmask is 255.254.0.0, a /15 spanning 10.8.0.0 through
+// 10.9.255.255. That is 131,072 addresses, so one /24 covers 0.19% of it and a
+// silent sweep proves nothing. Brute force would take roughly three hours.
+//
+// This is only useful once the bulb's actual address is known well enough to
+// guess the right /24 -- set the first three octets here to match.
+#define SWEEP_PREFIX "10.8.251."
 
 #define ESP_BAUD 115200
 
@@ -89,13 +92,24 @@ void writeEncrypted(bool withLength) {
   for (uint16_t i = 0; i < n; i++) { key ^= (uint8_t)PROBE[i]; Serial1.write(key); }
 }
 
+// 255.255.255.255 is a limited broadcast and never leaves the local segment.
+// On a network this large the bulb is very likely on a different one, so the
+// directed broadcast for the whole /15 is worth a separate try -- some kit
+// forwards it where the limited form is dropped.
+#define BROADCAST_ADDR "10.9.255.255"
+
 void broadcastScan() {
   Serial.println(F("\n=== UDP broadcast discovery ==="));
+  Serial.print(F("target "));
+  Serial.println(F(BROADCAST_ADDR));
+
   sendAT(F("AT+CIPMUX=1"), "OK", 3000);
   sendAT(F("AT+CIPDINFO=1"), "OK", 3000);
 
   // mode 2 lets the peer address change, so a unicast reply still arrives.
-  Serial1.println(F("AT+CIPSTART=0,\"UDP\",\"255.255.255.255\",9999,9999,2"));
+  Serial1.print(F("AT+CIPSTART=0,\"UDP\",\""));
+  Serial1.print(F(BROADCAST_ADDR));
+  Serial1.println(F("\",9999,9999,2"));
   if (!waitFor("OK", 6000)) { Serial.println(F("\n!! could not open UDP")); return; }
 
   Serial1.print(F("AT+CIPSEND=0,"));
