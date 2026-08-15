@@ -150,45 +150,79 @@ unsigned long lastFrame = 0;
 // out, so this is a duty cycle as much as a frame rate -- see loop().
 #define FRAME_MS 50
 
+// Both animations scale per pixel instead of leaning on FastLED's global
+// brightness, so the global scaler is set to 255 while one runs. That buys two
+// things: the rounding error can be dithered away, and the worm can exceed the
+// slider setting, which a global scale by definition cannot.
+void applyBrightness() {
+  FastLED.setBrightness(anim ? 255 : currBrightness);
+}
+
+// Ordered (Bayer) dither threshold for pixel i, by reversing its low 8 bits.
+// That spreads thresholds as evenly as possible along the strip, so adjacent
+// pixels round in opposite directions and the eye averages them together.
+uint8_t dither8(uint16_t i) {
+  uint8_t x = i;
+  x = (x >> 4) | (x << 4);
+  x = ((x & 0xCC) >> 2) | ((x & 0x33) << 2);
+  x = ((x & 0xAA) >> 1) | ((x & 0x55) << 1);
+  return x;
+}
+
+// Scales one pixel by v/256 with the rounding error dithered across the strip.
+void scalePixel(uint16_t i, uint8_t v) {
+  const uint8_t d = dither8(i);
+  leds[i].r = ((uint16_t)leds[i].r * v + d) >> 8;
+  leds[i].g = ((uint16_t)leds[i].g * v + d) >> 8;
+  leds[i].b = ((uint16_t)leds[i].b * v + d) >> 8;
+}
+
 // --- Cycle: whole strip one colour, drifting through the spectrum. ---------
-// Hue is 8.8 fixed point. Below ~256 per frame the visible hue stalls for two
-// or three frames and then jumps, which reads as choppy -- so the step is kept
-// above one whole hue per frame and the motion stays continuous.
-// 330 works out to a full loop every ~10s at 20fps. Raise it to go faster.
+// Hue is 8.8 fixed point; keeping the step above 256 means every frame moves
+// rather than stalling and jumping. ~10s per loop at 20fps -- raise to speed up.
+//
+// The smoothness problem is resolution, not rate: at a setting of 10 the strip
+// can show about 10 levels per channel, so a hue sweep lands on maybe 30
+// distinct colours. Dithering the sub-level remainder across 450 pixels
+// recovers most of that, since the whole strip is one colour and the eye
+// integrates neighbours.
 uint16_t cycleHue = 0;
 #define CYCLE_STEP 330
 
 void cycle() {
   cycleHue += CYCLE_STEP;
   fill_solid(leds, NUM_LEDS, CHSV(cycleHue >> 8, 255, 255));
+  for (int i = 0; i < NUM_LEDS; i++) scalePixel(i, currBrightness);
 }
 
-// --- Worm: a bright pulse running along a dimmed rainbow. ------------------
-// Purely a brightness change: nscale8 scales R, G and B together, so hue and
-// saturation are untouched and the pulse never washes toward white. That needs
-// headroom, which is why the rainbow rests at WORM_BASE rather than full --
-// there is nowhere above 255 for a pulse to go.
+// --- Worm: a brighter pulse running along the rainbow. ---------------------
+// The rainbow sits at exactly the brightness setting and the head runs
+// WORM_BOOST above it, so the background is unchanged from any other scene and
+// only the ~28 pixels of the pulse draw extra current.
 //
-// Position is 8.8 fixed point too, so the worm can advance less than a whole
-// pixel per frame without the motion becoming a stutter.
+// Position is 8.8 fixed point so the worm can advance less than a whole pixel
+// per frame without the motion turning into a stutter.
 uint32_t wormPos = 0;
 #define WORM_LEN   28     // pixels from head to fully faded tail
-#define WORM_SPEED 307    // 1.2 px/frame -- ~19s end to end at 20fps
-#define WORM_BASE  70     // resting brightness of the rainbow, 0-255
+#define WORM_SPEED 307    // 1.2 px/frame -- ~20s end to end at 20fps
+#define WORM_BOOST 50     // how far the head rises above the slider setting
 
 void worm() {
   fill_rainbow(leds, NUM_LEDS, 0, 7);
+
   const int head = wormPos >> 8;
+  const uint16_t peak = min((uint16_t)currBrightness + WORM_BOOST, (uint16_t)255);
+  const uint16_t span = (uint16_t)WORM_LEN * WORM_LEN;
 
   for (int i = 0; i < NUM_LEDS; i++) {
     const int d = head - i;
-    uint8_t v = WORM_BASE;
+    uint16_t v = currBrightness;
     if (d >= 0 && d < WORM_LEN) {
       // Squared falloff: a sharp head with a long, soft trail behind it.
       const uint16_t f = (uint16_t)(WORM_LEN - d) * (WORM_LEN - d);
-      v = WORM_BASE + (uint32_t)f * (255 - WORM_BASE) / ((uint16_t)WORM_LEN * WORM_LEN);
+      v += (uint32_t)f * (peak - currBrightness) / span;
     }
-    leds[i].nscale8(v);
+    scalePixel(i, v);
   }
 
   wormPos += WORM_SPEED;
@@ -279,8 +313,8 @@ const char PAGE[] PROGMEM =
   "<h2>Moving</h2><div class=sc>"
   "<button data-c=cy aria-pressed=false data-bg='linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
   "<i style='background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Cycle</button>"
-  "<button data-c=wo aria-pressed=false data-bg='radial-gradient(circle 26px at 72% 50%,transparent,rgba(0,0,0,.72) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
-  "<i style='background:radial-gradient(circle 11px at 72% 50%,transparent,rgba(0,0,0,.72) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Worm</button>"
+  "<button data-c=wo aria-pressed=false data-bg='radial-gradient(circle 26px at 72% 50%,transparent,rgba(0,0,0,.38) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'>"
+  "<i style='background:radial-gradient(circle 11px at 72% 50%,transparent,rgba(0,0,0,.38) 100%),linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)'></i>Worm</button>"
   "</div>"
 
   "<h2>Color</h2><div class=co>"
@@ -521,7 +555,7 @@ bool applyCommand(const char *path) {
   if (path[0] == 'v' && path[1]) {
     const int n = constrain(atoi(path + 1), 1, MAX_BRIGHTNESS);
     currBrightness = savedBrightness = n;
-    FastLED.setBrightness(n);
+    applyBrightness();
     return true;
   }
 
@@ -530,21 +564,22 @@ bool applyCommand(const char *path) {
   if (!strcmp(path, "off")) {
     if (currBrightness) savedBrightness = currBrightness;
     currBrightness = 0;
-    FastLED.setBrightness(0);
+    applyBrightness();
     return true;
   }
   if (!strcmp(path, "on")) {
     currBrightness = savedBrightness ? savedBrightness : BOOT_BRIGHTNESS;
-    FastLED.setBrightness(currBrightness);
+    applyBrightness();
     return true;
   }
 
   // --- animations: the frame loop takes over from here.
-  if (!strcmp(path, "cy")) { anim = A_CYCLE; renderFrame(); return true; }
-  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0; renderFrame(); return true; }
+  if (!strcmp(path, "cy")) { anim = A_CYCLE; applyBrightness(); renderFrame(); return true; }
+  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0; applyBrightness(); renderFrame(); return true; }
 
   // --- everything below is a static scene, so it stops any animation first.
   anim = A_NONE;
+  applyBrightness();
 
   if (path[0] == 'h' && strlen(path) == 7) return applyHex(path);
 
