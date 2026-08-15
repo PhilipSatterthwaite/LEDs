@@ -459,10 +459,31 @@ wheel.addEventListener('pointercancel', endDrag);
 var TPLINK  = 'https://wap.tplinkcloud.com/';
 var BULB_ID = '80129AC33FC34D22F321A5A549B6731722476A36';
 
+// TP-Link rejects logins whose client identification it does not recognise
+// ("app version is too old"), and the accepted shape has changed over time.
+// Rather than guess, try the known forms in order and keep whichever works --
+// the console names it, so it can be pinned later if wanted.
+var LOGIN_VARIANTS = [
+  { url: TPLINK, appType: 'Kasa_Android', appVersion: '2.8.0' },
+  { url: TPLINK, appType: 'Kasa_Android', appVersion: '1.4.4.607' },
+  { url: TPLINK, appType: 'Kasa_iOS',     appVersion: '2.8.0' },
+  { url: TPLINK, appType: 'Kasa_Android' },
+  { url: 'https://n-wap-gw.tplinkcloud.com/', appType: 'Kasa_Android', appVersion: '2.8.0' }
+];
+
 var lamp      = document.getElementById('lamp'),
     lampState = document.getElementById('lampstate'),
     lampBtn   = document.getElementById('lampbtn');
 var lampToken = null;
+var lampUrl   = TPLINK;   // whichever endpoint the successful login used
+
+function uuid(){
+  return (crypto && crypto.randomUUID) ? crypto.randomUUID()
+       : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){
+           var r = Math.random() * 16 | 0;
+           return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+         });
+}
 
 function lampSay(msg, on){
   lampState.textContent = msg;
@@ -480,28 +501,55 @@ function tplink(url, body){
   }).then(function(r){ return r.json(); });
 }
 
+function tryLogin(user, pass, v){
+  var params = {
+    appType: v.appType,
+    cloudUserName: user,
+    cloudPassword: pass,
+    terminalUUID: uuid()
+  };
+  if (v.appVersion) params.appVersion = v.appVersion;
+
+  return tplink(v.url, { method: 'login', params: params }).then(function(j){
+    if (j.error_code !== 0) {
+      throw new Error((j.msg || 'rejected') + ' [' + j.error_code + ']');
+    }
+    return j.result.token;
+  });
+}
+
 function lampLogin(user, pass){
   lampSay('Connecting…', false);
-  return tplink(TPLINK, {
-    method: 'login',
-    params: {
-      appType: 'Kasa_Android',
-      cloudUserName: user,
-      cloudPassword: pass,
-      terminalUUID: (crypto.randomUUID ? crypto.randomUUID()
-                                       : String(Date.now()) + Math.random())
+
+  var i = 0, lastErr = null;
+  function next(){
+    if (i >= LOGIN_VARIANTS.length) {
+      throw lastErr || new Error('no login variant accepted');
     }
-  }).then(function(j){
-    if (j.error_code !== 0) throw new Error(j.msg || ('error ' + j.error_code));
-    lampToken = j.result.token;
-    localStorage.setItem('tplink', JSON.stringify({ u: user, p: pass }));
-    lampSay('Connected', true);
-  });
+    var v = LOGIN_VARIANTS[i++];
+    console.log('[tplink] trying', v.appType, v.appVersion || '(no version)', v.url);
+
+    return tryLogin(user, pass, v).then(function(token){
+      lampToken = token;
+      lampUrl   = v.url;
+      console.log('[tplink] accepted:', JSON.stringify(v));
+      localStorage.setItem('tplink', JSON.stringify({ u: user, p: pass }));
+      lampSay('Connected', true);
+    }).catch(function(err){
+      lastErr = err;
+      console.warn('[tplink] rejected:', v.appType, v.appVersion || '', '->', err.message);
+      // A bad password fails every variant identically; no point grinding
+      // through the rest, and the message is clearer if we stop here.
+      if (/password|username|account/i.test(err.message)) throw err;
+      return next();
+    });
+  }
+  return next();
 }
 
 function lampSend(inner){
   if (!lampToken) return;
-  return tplink(TPLINK + '?token=' + encodeURIComponent(lampToken), {
+  return tplink(lampUrl + '?token=' + encodeURIComponent(lampToken), {
     method: 'passthrough',
     params: { deviceId: BULB_ID, requestData: JSON.stringify(inner) }
   }).catch(function(){ lampSay('Send failed', false); });
