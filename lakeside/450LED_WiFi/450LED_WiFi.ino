@@ -17,6 +17,18 @@
 // ---------------------------------------------------------------------------
 #define JOIN_NETWORK 1
 
+// The ESP's own AP. Off by default now that the bulb no longer lives on it.
+//
+// What it costs: AP_PASS is in a public repository, so anyone in radio range
+// who reads it can drive the strip at 192.168.4.1. Minor, but real -- and no
+// password committed here avoids it.
+//
+// What it buys: the only way to reach the Mega when servicenet is unavailable.
+// This board has no buttons and no display, so without it a dropped network or
+// a lapsed MAC registration means a laptop and a USB cable. Set to 1 before
+// leaving the strip somewhere inconvenient to get back to.
+#define AP_ENABLE   0
+
 // Password must be 8-63 characters.
 #define AP_SSID     "LakesideLEDs"
 #define AP_PASS     "lakeside450"
@@ -518,6 +530,7 @@ bool startWiFi() {
 
   if (!sendAT(F("ATE0"), "OK", 2000)) { Serial.println(F("\n!! no response to ATE0")); return false; }
 
+#if AP_ENABLE
   // Mode 3 = AP + station, so the fallback AP stays up even once joined.
   if (!sendAT(F("AT+CWMODE=3"), "OK", 3000)) { Serial.println(F("\n!! CWMODE failed")); return false; }
 
@@ -528,6 +541,11 @@ bool startWiFi() {
   esp.print(F(AP_PASS));
   esp.println(F("\",6,3"));
   if (!waitFor("OK", 10000)) { Serial.println(F("\n!! could not start AP")); return false; }
+#else
+  // Station only. One radio serving one network is also marginally steadier
+  // than splitting it between an AP and a station link.
+  if (!sendAT(F("AT+CWMODE=1"), "OK", 3000)) { Serial.println(F("\n!! CWMODE failed")); return false; }
+#endif
 
 #if JOIN_NETWORK
   // Campus device networks often want this MAC registered before they will
@@ -610,11 +628,14 @@ bool startWiFi() {
   }
 #endif
 
-  Serial.println(F("\nserver up on port 80"));
+  Serial.println(F("\nserver up on port 80 -- use the STAIP printed above"));
+#if AP_ENABLE
   Serial.print(F("fallback: join \""));
   Serial.print(F(AP_SSID));
   Serial.println(F("\" -> http://192.168.4.1"));
-  Serial.println(F("otherwise use the STAIP printed above"));
+#else
+  Serial.println(F("no fallback AP (AP_ENABLE 0) -- reachable only via the network above"));
+#endif
   return true;
 }
 
