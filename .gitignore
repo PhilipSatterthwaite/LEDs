@@ -12,3 +12,8 @@ build/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Local helper wrappers with machine-specific paths
+lamp.bat
+lampprobe.bat
+bridge.bat
