@@ -176,6 +176,13 @@ unsigned long lastBulb = 0;
 uint8_t bulbFails = 0;          // consecutive failures, drives the backoff
 unsigned long lastCmd = 0;      // any command in; debounces the bulb
 
+// The lamp keeps its own brightness and power so it can be driven
+// independently of the strip. In mirror mode the strip's values are copied
+// into these; addressed directly with "l:", they move on their own.
+uint8_t lampPct = 40;           // 1-100, the bulb's own scale
+bool    lampFollowsAnim = true; // does a running scene drift the lamp too?
+bool    lampOn  = true;
+
 // Declared here rather than beside the Kasa helpers because startWiFi() runs
 // the handshake during boot, and that sits higher in the file.
 Klap klap;
@@ -262,7 +269,7 @@ void cycle() {
   // Let the bulb drift along with the strip. Each bulb update costs a TCP
   // round trip, so it samples the hue rather than tracking every frame.
   bulbTint = CHSV(cycleHue >> 8, 255, 255);
-  if (millis() - lastBulb > 3000) bulbDirty = true;
+  if (lampFollowsAnim && millis() - lastBulb > 3000) bulbDirty = true;
 }
 
 // --- Worm: a brighter pulse running along the rainbow. ---------------------
@@ -736,9 +743,7 @@ void bulbPush() {
   bulbDirty = false;
   lastBulb = millis();
 
-  const bool ok = currBrightness
-    ? bulbColour(bulbTint, constrain((uint16_t)currBrightness * 100 / MAX_BRIGHTNESS, 1, 100))
-    : bulbOff();
+  const bool ok = lampOn ? bulbColour(bulbTint, lampPct) : bulbOff();
 
   if (ok) {
     bulbFails = 0;
@@ -751,10 +756,70 @@ void bulbPush() {
 // Command dispatch. `path` is the URL path with the leading slash stripped.
 // Returns true if the strip changed and needs a show().
 // ---------------------------------------------------------------------------
+// Maps a colour command to its RGB. Scenes have no single colour, so they
+// return false and the caller decides what that means.
+bool colourFor(const char *c, CRGB &out) {
+  if (c[0] == 'h' && strlen(c) == 7) {
+    uint8_t v[6];
+    for (uint8_t i = 0; i < 6; i++) {
+      v[i] = nibble(c[1 + i]);
+      if (v[i] == 255) return false;
+    }
+    out = CRGB(v[0] << 4 | v[1], v[2] << 4 | v[3], v[4] << 4 | v[5]);
+    return true;
+  }
+  if (!strcmp(c, "r"))  { out = CRGB(255,   0,   0); return true; }
+  if (!strcmp(c, "g"))  { out = CRGB(  0, 255,   0); return true; }
+  if (!strcmp(c, "b"))  { out = CRGB(  0,   0, 255); return true; }
+  if (!strcmp(c, "w"))  { out = CRGB(255, 255, 255); return true; }
+  if (!strcmp(c, "wm")) { out = CRGB(255, 162,  57); return true; }
+  if (!strcmp(c, "y"))  { out = CRGB(255, 234,   0); return true; }
+  if (!strcmp(c, "p"))  { out = CRGB( 95,   0, 160); return true; }
+  if (!strcmp(c, "lg")) { out = CRGB( 34, 139,  34); return true; }
+  if (!strcmp(c, "lb")) { out = CRGB(  0, 255, 255); return true; }
+  if (!strcmp(c, "a"))  { out = CRGB(  0, 191, 255); return true; }
+  if (!strcmp(c, "c"))  { out = CRGB(  0,  71, 171); return true; }
+  return false;
+}
+
+// Lamp-only command ("l:" prefix): changes lamp state without touching the
+// strip. Scenes collapse to a warm white, since a travelling pulse has no
+// single-bulb equivalent.
+bool applyLamp(const char *cmd) {
+  if (cmd[0] == 'v' && cmd[1]) {
+    lampPct = constrain((uint16_t)atoi(cmd + 1) * 100 / MAX_BRIGHTNESS, 1, 100);
+    lampOn = true;
+    bulbDirty = true;
+    return true;
+  }
+  if (!strcmp(cmd, "off")) { lampOn = false; bulbDirty = true; return true; }
+  if (!strcmp(cmd, "on"))  { lampOn = true;  bulbDirty = true; return true; }
+
+  CRGB col;
+  if (colourFor(cmd, col)) { bulbTint = col; }
+  else if (!strcmp(cmd, "rb") || !strcmp(cmd, "cy") ||
+           !strcmp(cmd, "wo") || !strcmp(cmd, "w4")) { bulbTint = CRGB(255, 162, 57); }
+  else return false;
+
+  lampOn = true;
+  bulbDirty = true;
+  return true;
+}
+
 bool applyCommand(const char *path) {
   // Any command restarts the bulb's quiet timer, so a burst of taps produces
   // exactly one bulb update rather than one per tap.
   lastCmd = millis();
+
+  // Optional target prefix. Bare commands drive both, which is mirror mode and
+  // the default; "s:" and "l:" address one device only.
+  bool toStrip = true, toLamp = true;
+  if (path[0] && path[1] == ':') {
+    if      (path[0] == 's') { toLamp  = false; path += 2; }
+    else if (path[0] == 'l') { toStrip = false; path += 2; }
+  }
+
+  if (!toStrip) return applyLamp(path);
 
   // --- brightness and power: deliberately do NOT disturb a running animation,
   // --- so you can dim or blank an effect without restarting it.
@@ -766,7 +831,11 @@ bool applyCommand(const char *path) {
     const int n = constrain(atoi(path + 1), 1, MAX_BRIGHTNESS);
     currBrightness = savedBrightness = n;
     applyBrightness();
-    bulbDirty = true;
+    if (toLamp) {
+      lampPct = constrain((uint16_t)n * 100 / MAX_BRIGHTNESS, 1, 100);
+      lampOn = true;
+      bulbDirty = true;
+    }
     return true;
   }
 
@@ -776,22 +845,22 @@ bool applyCommand(const char *path) {
     if (currBrightness) savedBrightness = currBrightness;
     currBrightness = 0;
     applyBrightness();
-    bulbDirty = true;
+    if (toLamp) { lampOn = false; bulbDirty = true; }
     return true;
   }
   if (!strcmp(path, "on")) {
     currBrightness = savedBrightness ? savedBrightness : BOOT_BRIGHTNESS;
     applyBrightness();
-    bulbDirty = true;
+    if (toLamp) { lampOn = true; bulbDirty = true; }
     return true;
   }
 
   // --- animations: the frame loop takes over from here. The bulb cannot
   // --- animate, so it holds the scene's representative colour; cycle updates
   // --- bulbTint per frame so the bulb drifts along with the strip.
-  if (!strcmp(path, "cy")) { anim = A_CYCLE; applyBrightness(); renderFrame(); bulbDirty = true; return true; }
-  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0;  applyBrightness(); renderFrame(); bulbTint = CHSV(0, 255, 255); bulbDirty = true; return true; }
-  if (!strcmp(path, "w4")) { anim = A_QUAD;  quadReset(); applyBrightness(); renderFrame(); bulbTint = CHSV(0, 255, 255); bulbDirty = true; return true; }
+  if (!strcmp(path, "cy")) { anim = A_CYCLE; applyBrightness(); renderFrame(); lampFollowsAnim = toLamp; if (toLamp) bulbDirty = true; return true; }
+  if (!strcmp(path, "wo")) { anim = A_WORM;  wormPos = 0;  applyBrightness(); renderFrame(); lampFollowsAnim = toLamp; if (toLamp) { bulbTint = CHSV(0, 255, 255); bulbDirty = true; } return true; }
+  if (!strcmp(path, "w4")) { anim = A_QUAD;  quadReset(); applyBrightness(); renderFrame(); lampFollowsAnim = toLamp; if (toLamp) { bulbTint = CHSV(0, 255, 255); bulbDirty = true; } return true; }
 
   // --- everything below is a static scene, so it stops any animation first.
   anim = A_NONE;
@@ -814,7 +883,12 @@ bool applyCommand(const char *path) {
 
   // Static scenes leave leds[] at full value -- the global scaler applies at
   // show() -- so the first pixel is the colour to mirror to the bulb.
-  if (ok) { bulbTint = leds[0]; bulbDirty = true; }
+  if (ok && toLamp) {
+    lampFollowsAnim = false;
+    bulbTint = leds[0];
+    lampOn = true;
+    bulbDirty = true;
+  }
   return ok;
 }
 

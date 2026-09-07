@@ -89,13 +89,15 @@ input[type=range]{width:100%;accent-color:#7FB2FF;touch-action:none}
 .lamp{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;
   background:var(--s);border:1px solid var(--l);border-radius:var(--r);
   padding:12px 14px;margin-top:9px}
-.lamp b{display:block;font-size:13px;font-weight:600}
-.lamp span{display:block;font-size:11px;color:var(--d);margin-top:2px;
-  letter-spacing:.04em}
-.lamp button{padding:9px 15px;border:1px solid var(--l);border-radius:9px;
-  background:var(--z);color:var(--t);font:inherit;font-size:12px;
-  letter-spacing:.08em;text-transform:uppercase}
-.lamp[data-on=true] button{background:#16301E;border-color:#2E6B45;color:#8FE0AC}
+#mirlab{display:flex;align-items:center;gap:9px;font-size:13px;cursor:pointer}
+#mirror{width:18px;height:18px;accent-color:#7FB2FF;margin:0}
+
+/* Two-up segmented control: which device the controls drive. */
+.seg{display:flex;gap:4px;background:var(--g);border:1px solid var(--l);
+  border-radius:10px;padding:3px}
+.seg button{padding:7px 14px;border:none;border-radius:7px;background:none;
+  color:var(--d);font:inherit;font-size:12px;letter-spacing:.06em}
+.seg button[aria-pressed=true]{background:var(--z);color:var(--t);font-weight:600}
 
 #pw{width:100%;padding:15px 0;border:1px solid var(--l);border-radius:var(--r);
   background:var(--s);color:var(--t);font:inherit;font-size:13px;font-weight:600;
@@ -180,9 +182,12 @@ body[data-ready=false] #pw{opacity:.4;pointer-events:none}
 
 <button id="pw" data-on="true">On</button>
 
-<div class="lamp" id="lamp" data-on="false">
-  <div><b>Lamp</b><span id="lampstate">Use the Kasa app</span></div>
-  <button id="lampbtn">Connect</button>
+<div class="lamp">
+  <label id="mirlab"><input type="checkbox" id="mirror" checked> Mirror to lamp</label>
+  <div class="seg" id="seg" hidden>
+    <button data-t="s" aria-pressed="true">Strip</button>
+    <button data-t="l" aria-pressed="false">Lamp</button>
+  </div>
 </div>
 
 <div id="sent">Sent</div>
@@ -297,6 +302,7 @@ function publish(cmd, quiet){
 // discrete press twice drops the miss rate to a few percent. Safe only because
 // every command is idempotent, which is why power is on/off and not a toggle.
 function sendTwice(cmd){
+  cmd = prefix() + cmd;
   if (!publish(cmd)) return false;
   setTimeout(function(){ publish(cmd, true); }, 220);
   return true;
@@ -309,6 +315,7 @@ function sendTwice(cmd){
 var lastSend = 0, queued = null, qTimer = null;
 
 function send(cmd){
+  cmd = prefix() + cmd;
   var now = Date.now();
   if (now - lastSend >= 140) { lastSend = now; queued = null; return publish(cmd); }
   queued = cmd;
@@ -365,9 +372,6 @@ document.body.addEventListener('click', function(e){
   mark(btn, btn.dataset.bg || btn.style.getPropertyValue('--c'), NAMES[c] || c);
   ON = true;
 
-  var hex = (btn.dataset.lamp || btn.style.getPropertyValue('--c') || '').trim();
-  if (/^#[0-9a-f]{6}$/i.test(hex)) lampHex = hex;
-  lampQueue(lampHex, true);
 
   paint();
 });
@@ -377,7 +381,6 @@ document.body.addEventListener('click', function(e){
 pw.addEventListener('click', function(){
   if (!sendTwice(ON ? 'off' : 'on')) return;
   ON = !ON;
-  lampQueue(lampHex, ON);
   paint();
 });
 
@@ -386,7 +389,6 @@ pw.addEventListener('click', function(){
 sr.addEventListener('input', function(){
   B = +sr.value; ON = true;
   send('v' + B);
-  lampQueue(lampHex, true);
   paint();
 });
 sr.addEventListener('change', flush);
@@ -419,7 +421,6 @@ function setHS(h, s){
   ON = true;
   send('h' + hex);
   lampHex = '#' + hex;
-  lampQueue(lampHex, true);
   paint();
 }
 
@@ -446,191 +447,39 @@ wheel.addEventListener('pointerup', endDrag);
 wheel.addEventListener('pointercancel', endDrag);
 
 // ---------------------------------------------------------------------------
-// Kasa lamp, through TP-Link's cloud.
+// Target routing.
 //
-// The Mega cannot do this: the cloud is HTTPS and its 2016 AT firmware has no
-// usable TLS. A browser does, so the lamp is driven from here instead -- the
-// same outbound-only pattern as MQTT, which is why it works across networks
-// with no local reachability at all.
+// Mirror on  -> bare commands, which the Mega applies to both.
+// Mirror off -> "s:" or "l:" so only the selected device responds.
 //
-// Credentials are entered at runtime and kept in this browser's localStorage.
-// They are never in the repository -- this page is served publicly.
+// The lamp is driven by the Mega over KLAP, not from here. The TP-Link cloud
+// path that used to live in this file is gone: that API was retired, and it
+// became unnecessary once the Mega could authenticate to the bulb itself.
 // ---------------------------------------------------------------------------
-var TPLINK  = 'https://wap.tplinkcloud.com/';
-var BULB_ID = '80129AC33FC34D22F321A5A549B6731722476A36';
+var mirror = document.getElementById('mirror'),
+    seg    = document.getElementById('seg');
+var target = 's';
 
-// TP-Link rejects logins whose client identification it does not recognise
-// ("app version is too old"), and the accepted shape has changed over time.
-// Rather than guess, try the known forms in order and keep whichever works --
-// the console names it, so it can be pinned later if wanted.
-// All on the one endpoint known to answer. An alternate host was in here
-// briefly and only produced "failed to fetch", which is a dead name rather
-// than a useful result -- and it masked the real API errors ahead of it.
-var LOGIN_VARIANTS = [
-  { url: TPLINK, appType: 'Kasa_Android', appVersion: '2.8.0' },
-  { url: TPLINK, appType: 'Kasa_Android', appVersion: '1.4.4.607' },
-  { url: TPLINK, appType: 'Kasa_Android', appVersion: '3.4.1' },
-  { url: TPLINK, appType: 'Kasa_iOS',     appVersion: '2.8.0' },
-  { url: TPLINK, appType: 'Kasa_Android' }
-];
+function prefix(){ return mirror.checked ? '' : target + ':'; }
 
-var lamp      = document.getElementById('lamp'),
-    lampState = document.getElementById('lampstate'),
-    lampBtn   = document.getElementById('lampbtn');
-var lampToken = null;
-var lampUrl   = TPLINK;   // whichever endpoint the successful login used
+mirror.addEventListener('change', function(){
+  seg.hidden = mirror.checked;
+  try { localStorage.setItem('mirror', mirror.checked ? '1' : '0'); } catch (e) {}
+});
 
-function uuid(){
-  return (crypto && crypto.randomUUID) ? crypto.randomUUID()
-       : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){
-           var r = Math.random() * 16 | 0;
-           return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-         });
-}
-
-function lampSay(msg, on){
-  lampState.textContent = msg;
-  lamp.dataset.on = !!on;
-  lampBtn.textContent = on ? 'On' : 'Connect';
-}
-
-// text/plain keeps this a "simple" request, so the browser skips the CORS
-// preflight -- one fewer thing TP-Link's API has to cooperate with.
-function tplink(url, body){
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-    body: JSON.stringify(body)
-  }).then(function(r){ return r.json(); });
-}
-
-function tryLogin(user, pass, v){
-  var params = {
-    appType: v.appType,
-    cloudUserName: user,
-    cloudPassword: pass,
-    terminalUUID: uuid()
-  };
-  if (v.appVersion) params.appVersion = v.appVersion;
-
-  return tplink(v.url, { method: 'login', params: params }).then(function(j){
-    if (j.error_code !== 0) {
-      throw new Error((j.msg || 'rejected') + ' [' + j.error_code + ']');
-    }
-    return j.result.token;
-  });
-}
-
-function lampLogin(user, pass){
-  lampSay('Connecting…', false);
-
-  // Prefer an error the API actually returned (it carries a code) over a
-  // transport failure from a later attempt -- otherwise one dead request
-  // hides every informative reply before it.
-  var i = 0, lastErr = null, apiErr = null;
-  function next(){
-    if (i >= LOGIN_VARIANTS.length) {
-      throw apiErr || lastErr || new Error('no login variant accepted');
-    }
-    var v = LOGIN_VARIANTS[i++];
-    console.log('[tplink] trying', v.appType, v.appVersion || '(no version)', v.url);
-
-    return tryLogin(user, pass, v).then(function(token){
-      lampToken = token;
-      lampUrl   = v.url;
-      console.log('[tplink] accepted:', JSON.stringify(v));
-      localStorage.setItem('tplink', JSON.stringify({ u: user, p: pass }));
-      lampSay('Connected', true);
-    }).catch(function(err){
-      lastErr = err;
-      if (!apiErr && /\[-?\d+\]/.test(err.message)) apiErr = err;   // has a code
-      console.warn('[tplink] rejected:', v.appType, v.appVersion || '', '->', err.message);
-      // A bad password fails every variant identically; no point grinding
-      // through the rest, and the message is clearer if we stop here.
-      if (/password|username|account/i.test(err.message)) throw err;
-      return next();
-    });
-  }
-  return next();
-}
-
-function lampSend(inner){
-  if (!lampToken) return;
-  return tplink(lampUrl + '?token=' + encodeURIComponent(lampToken), {
-    method: 'passthrough',
-    params: { deviceId: BULB_ID, requestData: JSON.stringify(inner) }
-  }).catch(function(){ lampSay('Send failed', false); });
-}
-
-// Colour comes in as #rrggbb; the bulb wants hue/saturation/brightness.
-function rgb2hsv(r, g, b){
-  r /= 255; g /= 255; b /= 255;
-  var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, h = 0;
-  if (d) {
-    if (mx === r)      h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
-    else if (mx === g) h = ((b - r) / d + 2) * 60;
-    else               h = ((r - g) / d + 4) * 60;
-  }
-  return { h: Math.round(h), s: Math.round(mx ? d / mx * 100 : 0) };
-}
-
-function lampApply(hex, on){
-  if (!lampToken) return;
-  if (!on) return lampSend({'smartlife.iot.smartbulb.lightingservice':
-    {transition_light_state:{on_off:0, transition_period:400}}});
-
-  var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-  if (!m) return;
-  var c = rgb2hsv(parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16));
-  lampSend({'smartlife.iot.smartbulb.lightingservice': {transition_light_state:{
-    ignore_default: 1, on_off: 1, hue: c.h, saturation: c.s, color_temp: 0,
-    brightness: Math.max(1, Math.round(B / MAXB * 100)), transition_period: 400
-  }}});
-}
-
-// Last real colour seen. Scenes are multicoloured, so they carry a data-lamp
-// stand-in rather than leaving the lamp on whatever preceded them.
-var lampHex = '#FF0000';
-var lampTimer = null, lampPending = null;
-
-// The cloud round trip is far slower than a slider drag, so coalesce.
-function lampQueue(hex, on){
-  if (!lampToken) return;
-  lampPending = { hex: hex, on: on };
-  if (lampTimer) return;
-  lampTimer = setTimeout(function(){
-    lampTimer = null;
-    if (lampPending) { lampApply(lampPending.hex, lampPending.on); lampPending = null; }
-  }, 600);
-}
-
-lampBtn.addEventListener('click', function(){
-  var saved = {};
-  try { saved = JSON.parse(localStorage.getItem('tplink') || '{}'); } catch (e) {}
-  var user = prompt('TP-Link account email', saved.u || '');
-  if (!user) return;
-  var pass = prompt('TP-Link password', saved.p || '');
-  if (!pass) return;
-  lampLogin(user, pass).catch(function(err){
-    var msg = String(err.message || err);
-    // -23003 comes back identically for every payload shape, including one
-    // with no appVersion at all -- so it is the method being refused, not the
-    // version. The legacy Kasa cloud login was retired when TP-Link moved to
-    // unified accounts; no client string gets past it.
-    lampSay(/-23003/.test(msg) ? 'TP-Link retired this API' : msg.slice(0, 40), false);
-    console.error('[tplink]', err);
+seg.addEventListener('click', function(e){
+  var b = e.target.closest('[data-t]');
+  if (!b) return;
+  target = b.dataset.t;
+  seg.querySelectorAll('[data-t]').forEach(function(x){
+    x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
   });
 });
 
-// Reconnect silently if credentials are already stored on this device.
-(function(){
-  var saved = null;
-  try { saved = JSON.parse(localStorage.getItem('tplink') || 'null'); } catch (e) {}
-  if (saved && saved.u) lampLogin(saved.u, saved.p).catch(function(err){
-    lampSay('Tap to reconnect', false);
-    console.error('[tplink]', err);
-  });
-})();
+// Worth reopening the panel in the state you left it.
+try { if (localStorage.getItem('mirror') === '0') mirror.checked = false; } catch (e) {}
+seg.hidden = mirror.checked;
+
 
 document.addEventListener('visibilitychange', function(){
   if (!document.hidden && (!ws || ws.readyState > 1)) connect();
