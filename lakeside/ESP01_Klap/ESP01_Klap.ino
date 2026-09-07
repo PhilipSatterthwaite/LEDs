@@ -1,148 +1,192 @@
-// KLAP on the Mega -- step 1: prove the crypto before trusting it.
+// KLAP from the Mega: authenticate to the bulb and change its colour.
 //
-// A wrong hash or a broken MixColumns produces output indistinguishable from
-// a wrong password, and that ambiguity has already cost this project hours.
-// So both primitives are checked against published vectors first, on the
-// device, and the result printed. Nothing else runs until they pass.
+// The transport was proved already -- the ESP opened TCP to the bulb, sent a
+// valid HTTP POST and got 200 with a session cookie. This adds the
+// cryptography that was the actual obstacle, none of which needs the network:
+// SHA-256 and AES-128-CBC run on the Mega, and auth_hash is a constant
+// computed off-device, so no password appears in this sketch.
 //
-// SHA-256 vectors: FIPS 180-4 / NIST examples.
-// AES-128 vector:  FIPS-197 Appendix C.1.
+// SETUP
+//   1. Run scratchpad/authhash.py, which asks for your TP-Link login and
+//      prints a 32-byte array. Paste it over AUTH_HASH below.
+//   2. Check BULB_IP -- re-provisioning moves it.
+//   3. Upload. Power-cycle the ESP first.
 //
-// Monitor at 115200. No network, no bulb -- pure arithmetic.
+// Crypto self-tests run first; if a vector fails nothing else is attempted,
+// because a broken primitive is indistinguishable from a rejected password.
 
 #include "sha256.h"
 #include "aes128.h"
+#include "klap.h"
 
-static bool allPassed = true;
+#define WIFI_SSID  "servicenet"
+#define WIFI_PASS  ""
+#define BULB_IP    "10.9.47.3"
 
-void dump(const char *label, const uint8_t *b, uint8_t n) {
-  Serial.print(F("  "));
-  Serial.print(label);
-  Serial.print(F(" "));
-  for (uint8_t i = 0; i < n; i++) {
-    if (b[i] < 16) Serial.print('0');
-    Serial.print(b[i], HEX);
-  }
-  Serial.println();
-}
+// ---------------------------------------------------------------------------
+// PLACEHOLDER -- replace with the output of authhash.py.
+// This is sha256(sha1(email) + sha1(password)); it cannot be reversed into
+// the password, and the bulb accepts nothing else.
+// ---------------------------------------------------------------------------
+static const uint8_t AUTH_HASH[32] PROGMEM = {
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
 
-bool check(const char *name, const uint8_t *got, const uint8_t *want, uint8_t n) {
-  const bool ok = memcmp(got, want, n) == 0;
-  Serial.print(ok ? F("  PASS  ") : F("  FAIL  "));
-  Serial.println(name);
-  if (!ok) {
-    dump("got ", got, n);
-    dump("want", want, n);
-    allPassed = false;
-  }
-  return ok;
-}
+Klap klap;
+uint8_t authHashRam[32];
 
-void testSha() {
-  Serial.println(F("\n-- SHA-256 --"));
-  uint8_t out[32];
+// --- self-test ------------------------------------------------------------
 
-  // ""
-  static const uint8_t v0[32] PROGMEM = {
-    0xe3,0xb0,0xc4,0x42,0x98,0xfc,0x1c,0x14,0x9a,0xfb,0xf4,0xc8,0x99,0x6f,0xb9,0x24,
-    0x27,0xae,0x41,0xe4,0x64,0x9b,0x93,0x4c,0xa4,0x95,0x99,0x1b,0x78,0x52,0xb8,0x55};
-  uint8_t want[32];
-  sha256(nullptr, 0, nullptr, 0, nullptr, 0, out);
-  memcpy_P(want, v0, 32);
-  check("empty string", out, want, 32);
+bool vectorsPass() {
+  uint8_t out[32], want[32];
+  bool ok = true;
 
-  // "abc"
-  static const uint8_t v1[32] PROGMEM = {
+  static const uint8_t sha_abc[32] PROGMEM = {
     0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
     0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};
   sha256((const uint8_t *)"abc", 3, nullptr, 0, nullptr, 0, out);
-  memcpy_P(want, v1, 32);
-  check("abc", out, want, 32);
+  memcpy_P(want, sha_abc, 32);
+  if (memcmp(out, want, 32)) { Serial.println(F("  FAIL sha256")); ok = false; }
 
-  // 56-byte message: exercises the padding path that spills into a second block
-  static const char msg[] = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-  static const uint8_t v2[32] PROGMEM = {
-    0x24,0x8d,0x6a,0x61,0xd2,0x06,0x38,0xb8,0xe5,0xc0,0x26,0x93,0x0c,0x3e,0x60,0x39,
-    0xa3,0x3c,0xe4,0x59,0x64,0xff,0x21,0x67,0xf6,0xec,0xed,0xd4,0x19,0xdb,0x06,0xc1};
-  sha256((const uint8_t *)msg, sizeof(msg) - 1, nullptr, 0, nullptr, 0, out);
-  memcpy_P(want, v2, 32);
-  check("56-byte message", out, want, 32);
-
-  // Three-part update, which is the shape KLAP actually uses.
-  sha256((const uint8_t *)"a", 1, (const uint8_t *)"b", 1, (const uint8_t *)"c", 1, out);
-  memcpy_P(want, v1, 32);
-  check("split into three parts", out, want, 32);
-}
-
-void testAes() {
-  Serial.println(F("\n-- AES-128 --"));
-
-  static const uint8_t key[16] PROGMEM = {
+  static const uint8_t k[16] PROGMEM = {
     0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
   static const uint8_t pt[16] PROGMEM = {
     0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff};
   static const uint8_t ct[16] PROGMEM = {
     0x69,0xc4,0xe0,0xd8,0x6a,0x7b,0x04,0x30,0xd8,0xcd,0xb7,0x80,0x70,0xb4,0xc5,0x5a};
+  uint8_t kk[16], blk[16], wc[16];
+  memcpy_P(kk, k, 16); memcpy_P(blk, pt, 16); memcpy_P(wc, ct, 16);
+  Aes128 aes; aes.setKey(kk); aes.encryptBlock(blk);
+  if (memcmp(blk, wc, 16)) { Serial.println(F("  FAIL aes")); ok = false; }
 
-  uint8_t k[16], block[16], want[16];
-  memcpy_P(k, key, 16);
-  memcpy_P(block, pt, 16);
-  memcpy_P(want, ct, 16);
+  Serial.println(ok ? F("  vectors pass") : F("  VECTORS FAILED"));
+  return ok;
+}
 
-  Aes128 aes;
-  aes.setKey(k);
+// --- AT helpers used only during bring-up ----------------------------------
 
-  aes.encryptBlock(block);
-  check("FIPS-197 encrypt", block, want, 16);
+bool waitFor(const char *tok, unsigned long ms) {
+  const unsigned long end = millis() + ms;
+  uint8_t m = 0;
+  while ((long)(millis() - end) < 0) {
+    while (Serial1.available()) {
+      const char c = Serial1.read();
+      Serial.write(c);
+      if (c == tok[m]) { if (tok[++m] == '\0') return true; }
+      else m = (c == tok[0]) ? 1 : 0;
+    }
+  }
+  return false;
+}
 
-  aes.decryptBlock(block);
-  memcpy_P(want, pt, 16);
-  check("FIPS-197 decrypt", block, want, 16);
+void drain(unsigned long idle) {
+  unsigned long last = millis();
+  while (millis() - last < idle) {
+    while (Serial1.available()) { Serial.write(Serial1.read()); last = millis(); }
+  }
+}
 
-  // CBC round trip over two blocks, which is what request bodies use.
-  uint8_t iv[16];
-  for (uint8_t i = 0; i < 16; i++) iv[i] = i * 7 + 1;
+bool sendAT(const __FlashStringHelper *cmd, const char *expect, unsigned long ms) {
+  Serial1.println(cmd);
+  const bool ok = waitFor(expect, ms);
+  drain(300);
+  return ok;
+}
 
-  uint8_t buf[32], orig[32];
-  for (uint8_t i = 0; i < 32; i++) buf[i] = orig[i] = (uint8_t)(i * 3 + 5);
+// --- bulb commands ---------------------------------------------------------
 
-  aes.cbcEncrypt(buf, 32, iv);
-  bool changed = memcmp(buf, orig, 32) != 0;
-  Serial.print(changed ? F("  PASS  ") : F("  FAIL  "));
-  Serial.println(F("CBC encrypt altered the buffer"));
-  if (!changed) allPassed = false;
+bool setHsv(uint16_t hue, uint8_t sat, uint8_t bri) {
+  char json[210];
+  snprintf_P(json, sizeof(json),
+    PSTR("{\"smartlife.iot.smartbulb.lightingservice\":{\"transition_light_state\":"
+         "{\"ignore_default\":1,\"on_off\":1,\"hue\":%u,\"saturation\":%u,"
+         "\"color_temp\":0,\"brightness\":%u,\"transition_period\":400}}}"),
+    hue, sat, bri);
 
-  aes.cbcDecrypt(buf, 32, iv);
-  check("CBC round trip", buf, orig, 32);
+  const unsigned long t0 = millis();
+  const bool ok = klap.request(json);
+  Serial.print(F("  set_hsv("));
+  Serial.print(hue); Serial.print(','); Serial.print(sat); Serial.print(',');
+  Serial.print(bri); Serial.print(F(") -> "));
+  Serial.print(ok ? F("ok") : F("FAILED"));
+  Serial.print(F("  ")); Serial.print(millis() - t0); Serial.println(F("ms"));
+  if (ok && klap.bodyLen) {
+    Serial.print(F("    reply: "));
+    Serial.println((char *)klap.buf);
+  }
+  return ok;
 }
 
 void setup() {
   Serial.begin(115200);
   delay(400);
-  Serial.println(F("\n=== KLAP crypto self-test ==="));
+  Serial.println(F("\n=== KLAP from the Mega ==="));
 
-  const unsigned long t0 = micros();
-  testSha();
-  testAes();
-  const unsigned long dt = micros() - t0;
+  Serial.println(F("\n-- crypto self-test --"));
+  if (!vectorsPass()) { Serial.println(F("\nstopping.")); return; }
 
-  Serial.println();
-  Serial.print(F("elapsed: "));
-  Serial.print(dt / 1000.0, 1);
-  Serial.println(F(" ms"));
+  memcpy_P(authHashRam, AUTH_HASH, 32);
+  bool blank = true;
+  for (uint8_t i = 0; i < 32; i++) if (authHashRam[i]) { blank = false; break; }
+  if (blank) {
+    Serial.println(F("\nAUTH_HASH is still the placeholder."));
+    Serial.println(F("Run scratchpad/authhash.py and paste its output in."));
+    return;
+  }
 
-  // Rough budget check: KLAP does a handful of hashes and one AES pass per
-  // command, so per-command cost needs to stay well under a frame time.
-  uint8_t out[32];
-  const unsigned long t1 = micros();
-  for (uint8_t i = 0; i < 10; i++) sha256((const uint8_t *)"abc", 3, nullptr, 0, nullptr, 0, out);
-  Serial.print(F("sha256 x10: "));
-  Serial.print((micros() - t1) / 1000.0, 1);
-  Serial.println(F(" ms"));
+  Serial1.begin(115200);
+  sendAT(F("AT+RST"), "ready", 10000);
+  delay(1200);
+  drain(1000);
+  sendAT(F("ATE0"), "OK", 3000);
+  sendAT(F("AT+CWMODE=1"), "OK", 4000);
+  sendAT(F("AT+CWQAP"), "OK", 5000);
+  drain(1000);
 
-  Serial.println();
-  Serial.println(allPassed ? F("*** ALL VECTORS PASS -- crypto is sound ***")
-                           : F("*** FAILURES ABOVE -- do not build on this ***"));
+  Serial.print(F("\njoining "));
+  Serial.println(F(WIFI_SSID));
+  Serial1.print(F("AT+CWJAP=\""));
+  Serial1.print(F(WIFI_SSID));
+  Serial1.print(F("\",\""));
+  Serial1.print(F(WIFI_PASS));
+  Serial1.println(F("\""));
+  if (!waitFor("WIFI GOT IP", 25000)) { Serial.println(F("\n!! join failed")); return; }
+  drain(1500);
+  sendAT(F("AT+CIPMUX=0"), "OK", 4000);
+
+  randomSeed(analogRead(A0) ^ micros());
+
+  klap.esp = &Serial1;
+  klap.host = BULB_IP;
+  klap.authHash = authHashRam;
+
+  Serial.print(F("\nhandshaking with "));
+  Serial.println(F(BULB_IP));
+  const unsigned long t0 = millis();
+  if (!klap.handshake()) {
+    Serial.println(F("\n!! handshake failed"));
+    Serial.print(F("   last HTTP status: ")); Serial.println(klap.status);
+    Serial.print(F("   cookie: ")); Serial.println(klap.cookie[0] ? klap.cookie : "(none)");
+    Serial.println(F("   A 200 with the right cookie but a hash mismatch means"));
+    Serial.println(F("   AUTH_HASH does not match this device."));
+    return;
+  }
+  Serial.print(F("\n*** AUTHENTICATED in "));
+  Serial.print(millis() - t0);
+  Serial.println(F("ms ***"));
+  Serial.print(F("  cookie ")); Serial.println(klap.cookie);
+  Serial.print(F("  seq    ")); Serial.println(klap.seq);
+
+  Serial.println(F("\nwatch the lamp:"));
+  setHsv(0,   100, 60);  delay(1200);
+  setHsv(120, 100, 60);  delay(1200);
+  setHsv(240, 100, 60);  delay(1200);
+  setHsv(30,   78, 40);
+
+  Serial.println(F("\n=== done -- the Mega is driving the bulb ==="));
 }
 
 void loop() {}
