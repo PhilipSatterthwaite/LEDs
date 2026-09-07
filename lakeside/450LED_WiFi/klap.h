@@ -35,6 +35,11 @@ struct Klap {
   const char *host = nullptr;
   const uint8_t *authHash = nullptr;   // 32 bytes, in RAM
 
+  // Link id for CIPMUX=1, or -1 for single-connection mode. The main sketch
+  // runs a server and an MQTT socket, so it needs an id; the standalone test
+  // sketch does not.
+  int8_t link = -1;
+
   char cookie[48] = {0};      // "TP_SESSIONID=..."
   uint8_t key[16], ivBase[12], sigKey[28];
   int32_t seq = 0;
@@ -68,9 +73,13 @@ struct Klap {
 
   bool open() {
     io->print(F("AT+CIPCLOSE"));
+    if (link >= 0) { io->print('='); io->print(link); }
     io->print(F("\r\n"));
     drain(250);
-    io->print(F("AT+CIPSTART=\"TCP\",\""));
+
+    io->print(F("AT+CIPSTART="));
+    if (link >= 0) { io->print(link); io->print(','); }
+    io->print(F("\"TCP\",\""));
     io->print(host);
     io->println(F("\",80"));
     // CONNECT is unique to this command; OK is emitted by everything.
@@ -96,6 +105,7 @@ struct Klap {
     h += snprintf_P(head + h, sizeof(head) - h, PSTR("Connection: close\r\n\r\n"));
 
     io->print(F("AT+CIPSEND="));
+    if (link >= 0) { io->print(link); io->print(','); }
     io->println(h + n);
     if (!waitTok(">", 5000)) return false;
 
@@ -128,7 +138,9 @@ struct Klap {
     }
     if (!total) return false;
 
-    // Strip the AT framing: every chunk arrives as "+IPD,<len>:<bytes>".
+    // Strip the AT framing. Single-connection mode sends "+IPD,<len>:", and
+    // CIPMUX=1 sends "+IPD,<id>,<len>:" -- so read a number, and if a comma
+    // follows it was the id and the real length comes next.
     uint16_t w = 0;
     uint16_t i = 0;
     while (i < total) {
@@ -136,6 +148,11 @@ struct Klap {
         i += 5;
         uint16_t len = 0;
         while (i < total && buf[i] >= '0' && buf[i] <= '9') len = len * 10 + (buf[i++] - '0');
+        if (i < total && buf[i] == ',') {
+          i++;
+          len = 0;
+          while (i < total && buf[i] >= '0' && buf[i] <= '9') len = len * 10 + (buf[i++] - '0');
+        }
         if (i < total && buf[i] == ':') i++;
         for (uint16_t k = 0; k < len && i < total; k++) buf[w++] = buf[i++];
       } else {

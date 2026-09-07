@@ -1,4 +1,8 @@
 #include <FastLED.h>
+#include "sha256.h"
+#include "aes128.h"
+#include "klap.h"
+#include "klap_secret.h"
 
 // ---------------------------------------------------------------------------
 // Network
@@ -72,50 +76,27 @@
 // ---------------------------------------------------------------------------
 // TP-Link Kasa KL125 -- the strip mirrors its colour to the bulb.
 //
-// PUT THE BULB ON THIS ESP'S OWN AP, not on the campus network. Reset it
-// (off/on three times until it blinks), run Kasa setup, and pick AP_SSID
-// instead of servicenet. The app will fail its cloud check-in, which does not
-// matter -- the bulb commits the credentials regardless, as it did before.
+// Both devices are ordinary stations on servicenet. The bulb's firmware moved
+// off the legacy XOR protocol to KLAP, so this authenticates properly: SHA-256
+// and AES-128-CBC on the Mega, with the handshake in klap.h.
 //
-// Why: servicenet is a /15, 131,072 addresses, and a network that size
-// isolates its clients as a matter of course. On our own AP there is no
-// isolation to fight, the address space is a handful of hosts, and the ESP's
-// own DHCP table names the bulb outright -- so nothing has to be scanned or
-// hardcoded, and a changed lease fixes itself.
+// AUTH_HASH is sha256(sha1(email) + sha1(password)), derived off-device by
+// authhash.bat and kept in klap_secret.h, which is gitignored -- with the
+// account email known, a short password is brute-forceable from that hash.
 //
-// The trade is that the bulb loses internet, so the Kasa app can only reach it
-// when your phone is also on AP_SSID. Control through this app is unaffected:
-// it goes phone -> broker -> Mega -> bulb.
-//
-// Set BULB_IP only to override discovery -- for a bulb on a normal home
-// network alongside the ESP, say. Empty means "find it on our AP".
+// BULB_IP is static: discovery does not help here. The ESP's DHCP table only
+// lists clients of its own AP, and servicenet is a /15 whose broadcast is
+// suppressed. Re-provisioning the bulb moves it; the Kasa app shows the
+// current address when the phone is on the same network.
 // ---------------------------------------------------------------------------
-// OFF, because it cannot work in this arrangement. Discovery is fine -- CWLIF
-// names the bulb on our AP -- but AT+CIPSTART to it returns ERROR every time.
-// The AT firmware's TCP client binds to the station interface, so an address
-// on its own SoftAP subnet is unreachable to it. That is a firmware limit, not
-// something the sketch can route around.
-//
-// Every attempt also blocks for seconds while waitFor discards incoming MQTT,
-// so leaving it enabled costs commands to the strip for no benefit.
-//
-// Set to 1 when the bulb is somewhere the ESP can actually reach it: both
-// joined to the same ordinary router, where neither is hosting the other.
-#define BULB_ENABLE 0
+#define BULB_ENABLE 1
+#define BULB_IP     "10.9.47.3"
+#define BULB_LINK   3          // below MQTT at 4; the server takes 0-2
 
-#define BULB_MAC    "24:2f:d0:59:10:34"   // lower case, as AT+CWLIF reports it
-#define BULB_IP     ""                    // optional static override
-#define BULB_PORT   9999
-#define BULB_LINK   3
-
-// Each update opens a TCP connection, so it costs a few hundred ms. Well below
-// the command rate the sliders produce, hence the rate limit below.
-#define BULB_MIN_MS 700
-
-// A bulb push blocks while it waits on AT replies, and those waits discard
-// whatever else arrives -- including incoming MQTT commands. So a bulb that is
-// failing must not be retried on every colour change, or it eats the strip's
-// responsiveness. After this many consecutive failures, back off hard.
+// A KLAP command costs ~1.3s -- two HTTP round trips plus hashing and AES on
+// an 8-bit core. Nowhere near fast enough for an animation frame, so bulb work
+// happens only on the idle path, rate limited, and backs off when failing.
+#define BULB_MIN_MS 1500
 #define BULB_MAX_FAILS 3
 #define BULB_RETRY_MS  30000
 
@@ -186,9 +167,11 @@ bool bulbDirty = false;
 unsigned long lastBulb = 0;
 uint8_t bulbFails = 0;          // consecutive failures, drives the backoff
 
-// Declared here rather than beside the Kasa helpers because startWiFi() probes
-// the bulb during boot, and that sits higher in the file.
-char bulbIP[16] = BULB_IP;      // filled in by bulbFind() when left empty
+// Declared here rather than beside the Kasa helpers because startWiFi() runs
+// the handshake during boot, and that sits higher in the file.
+Klap klap;
+uint8_t authHashRam[32];
+
 
 // ---------------------------------------------------------------------------
 // Patterns
@@ -349,6 +332,14 @@ void quad() {
 }
 
 void renderFrame() {
+  // Off means off. The worm and quad add WORM_BOOST on top of the slider, so
+  // at a setting of zero their heads still lit at the boost value -- the strip
+  // looked "off" with a pulse running along it.
+  if (!currBrightness) {
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+    return;
+  }
+
   switch (anim) {
     case A_CYCLE: cycle(); break;
     case A_WORM:  worm();  break;
@@ -601,42 +592,25 @@ bool startWiFi() {
   // reach the bulb, or does the network isolate its clients from each other?
 #if !BULB_ENABLE
   Serial.println(F("\n-- kasa bulb: disabled --"));
-  Serial.println(F("AT+CIPSTART cannot reach a client of the ESP's own AP."));
-  Serial.println(F("Put the bulb and the ESP on one ordinary router, then set"));
-  Serial.println(F("BULB_ENABLE 1 and WIFI_SSID to that network."));
 #else
   Serial.println(F("\n-- kasa bulb --"));
+  klap.io = &esp;
+  klap.host = BULB_IP;
+  klap.link = BULB_LINK;
+  memcpy_P(authHashRam, AUTH_HASH, 32);
+  klap.authHash = authHashRam;
 
-  // A configured address must not go through discovery: bulbFind() clears
-  // bulbIP before scanning, so calling it here would wipe the static value.
-  bool located;
-  if (BULB_IP[0]) {
-    Serial.print(F("configured address: "));
-    Serial.println(bulbIP);
-    located = true;
+  Serial.print(F("KLAP handshake with "));
+  Serial.println(F(BULB_IP));
+  if (klap.handshake()) {
+    Serial.println(F("authenticated -- setting it red as a check"));
+    bulbColour(CRGB::Red, 30);
   } else {
-    Serial.println(F("stations on our AP:"));
-    located = bulbFind();
-  }
-
-  if (!located) {
-    // Restarting the sketch restarts the AP, and the bulb takes appreciably
-    // longer to re-associate than the few seconds before this probe runs.
-    // Discovery repeats on every push, so this is a status line, not a fault.
-    Serial.print(F("\n\nnot on the AP yet ("));
-    Serial.print(F(BULB_MAC));
-    Serial.println(F(")"));
-    Serial.println(F("if it joined before, it is just re-associating -- give it"));
-    Serial.println(F("a minute and change a colour; discovery runs again then."));
-    Serial.print(F("if it has never joined, run Kasa setup against \""));
-    Serial.print(F(AP_SSID));
-    Serial.println(F("\""));
-  } else {
-    Serial.print(F("\n\nbulb at "));
-    Serial.println(bulbIP);
-    drainEsp(400);
-    if (bulbColour(CRGB::Red, 30)) Serial.println(F("\nbulb responded -- it should be red"));
-    else                           Serial.println(F("\njoined but not answering on 9999"));
+    // A 200 with a cookie but no match means AUTH_HASH is not this device's;
+    // no reply at all means the address moved or the bulb is offline.
+    Serial.print(F("handshake failed (HTTP "));
+    Serial.print(klap.status);
+    Serial.println(F(") -- strip is unaffected"));
   }
 #endif
 
@@ -717,108 +691,18 @@ bool espSend(uint8_t id, const uint8_t *data, uint16_t len) {
 }
 
 // ---------------------------------------------------------------------------
-// Kasa bulb
+// Kasa bulb, over KLAP.
 //
-// The wire format is a 4-byte big-endian length followed by JSON through an
-// XOR autokey stream seeded at 0xAB: each ciphertext byte becomes the key for
-// the next. It is obfuscation rather than encryption, but the bulb rejects
-// anything else.
+// The bulb's firmware moved off the legacy XOR protocol to an authenticated
+// one, so this performs the real handshake -- SHA-256 and AES-128-CBC running
+// on the Mega. See klap.h for the protocol; AUTH_HASH lives in the gitignored
+// klap_secret.h and is a constant derived off-device, so no credentials appear
+// in this sketch.
+//
+// A command costs roughly 1.3s: two HTTP round trips plus hashing and AES on
+// an 8-bit core. That is far too slow to sit inside an animation frame, which
+// is why bulb work happens only on the idle path and is rate limited.
 // ---------------------------------------------------------------------------
-// Reads until the line has been quiet for idleMs, discarding.
-//
-// CWLIF keeps streaming after bulbFind() has already matched, and issuing the
-// next command while it is still arriving gets "busy p..." and a silently
-// rejected command -- which then looks like the bulb refusing a connection.
-// Kept short: anything dropped here is incoming MQTT.
-void drainEsp(unsigned long idleMs) {
-  unsigned long last = millis();
-  while (millis() - last < idleMs) {
-    while (esp.available()) { esp.read(); last = millis(); }
-  }
-}
-
-// Asks the ESP which stations are on its AP and picks out the bulb by MAC.
-// AT+CWLIF answers one line per client as "<ip>,<mac>", so the lease is
-// authoritative -- no scanning, and a renewed address is picked up for free.
-bool bulbFind() {
-  bulbIP[0] = '\0';
-  esp.println(F("AT+CWLIF"));
-
-  char line[48];
-  uint8_t n = 0;
-  const unsigned long deadline = millis() + 5000;
-
-  while ((long)(millis() - deadline) < 0) {
-    const int c = esp.read();
-    if (c < 0) continue;
-    Serial.write(c);
-
-    if (c == '\n' || c == '\r') {
-      line[n] = '\0';
-      for (char *p = line; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
-
-      char *comma = strchr(line, ',');
-      if (comma && strstr(comma + 1, BULB_MAC)) {
-        *comma = '\0';
-        char *ip = line;
-        while (*ip && (*ip < '0' || *ip > '9')) ip++;   // skip any +CWLIF: prefix
-        strncpy(bulbIP, ip, sizeof(bulbIP) - 1);
-        bulbIP[sizeof(bulbIP) - 1] = '\0';
-        return true;
-      }
-      n = 0;
-    } else if (n < sizeof(line) - 1) {
-      line[n++] = (char)c;
-    }
-  }
-  return false;
-}
-
-bool bulbSend(const char *json) {
-  if (!bulbIP[0] && !bulbFind()) return false;
-  drainEsp(350);        // let CWLIF's tail land before commanding again
-
-  // Close first: a link left half-open by a previous failure makes CIPSTART
-  // return ERROR outright. UNLINK here just means it was not open, which is
-  // the normal case and not an error.
-  esp.print(F("AT+CIPCLOSE="));
-  esp.println(BULB_LINK);
-  drainEsp(350);
-
-  esp.print(F("AT+CIPSTART="));
-  esp.print(BULB_LINK);
-  esp.print(F(",\"TCP\",\""));
-  esp.print(bulbIP);
-  esp.print(F("\","));
-  esp.println(BULB_PORT);
-  // Timeouts are deliberately short. Every millisecond spent here is a
-  // millisecond of incoming MQTT being read and thrown away.
-  // CONNECT is specific to this command; OK is emitted by everything.
-  if (!waitFor("CONNECT", 2500)) { if (!BULB_IP[0]) bulbIP[0] = '\0'; return false; }
-
-  const uint16_t n = strlen(json);
-  esp.print(F("AT+CIPSEND="));
-  esp.print(BULB_LINK);
-  esp.print(',');
-  esp.println(n + 4);
-  if (!waitFor(">", 2000)) { closeConn(BULB_LINK); return false; }
-
-  esp.write((uint8_t)0);                  // 4-byte big-endian length
-  esp.write((uint8_t)0);
-  esp.write((uint8_t)(n >> 8));
-  esp.write((uint8_t)(n & 0xFF));
-
-  uint8_t key = 0xAB;
-  for (uint16_t i = 0; i < n; i++) {
-    key ^= (uint8_t)json[i];              // key becomes the byte just sent
-    esp.write(key);
-  }
-
-  const bool ok = waitFor("SEND OK", 2500);
-  closeConn(BULB_LINK);
-  return ok;
-}
-
 bool bulbColour(CRGB c, uint8_t pct) {
   const CHSV hsv = rgb2hsv_approximate(c);
   char json[210];
@@ -829,12 +713,12 @@ bool bulbColour(CRGB c, uint8_t pct) {
     (unsigned)((uint16_t)hsv.h * 360 / 255),
     (unsigned)((uint16_t)hsv.s * 100 / 255),
     (unsigned)pct);
-  return bulbSend(json);
+  return klap.request(json);
 }
 
 bool bulbOff() {
-  return bulbSend("{\"smartlife.iot.smartbulb.lightingservice\":"
-                  "{\"transition_light_state\":{\"on_off\":0,\"transition_period\":400}}}");
+  return klap.request("{\"smartlife.iot.smartbulb.lightingservice\":"
+                      "{\"transition_light_state\":{\"on_off\":0,\"transition_period\":400}}}");
 }
 
 // Pushes the current scene to the bulb. Called from the idle path in loop() so

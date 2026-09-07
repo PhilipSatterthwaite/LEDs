@@ -155,7 +155,7 @@ void setup() {
 
   randomSeed(analogRead(A0) ^ micros());
 
-  klap.esp = &Serial1;
+  klap.io = &Serial1;
   klap.host = BULB_IP;
   klap.authHash = authHashRam;
 
