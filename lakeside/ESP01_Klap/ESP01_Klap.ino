@@ -23,17 +23,13 @@
 #define WIFI_PASS  ""
 #define BULB_IP    "10.9.47.3"
 
-// ---------------------------------------------------------------------------
-// PLACEHOLDER -- replace with the output of authhash.py.
-// This is sha256(sha1(email) + sha1(password)); it cannot be reversed into
-// the password, and the bulb accepts nothing else.
-// ---------------------------------------------------------------------------
-static const uint8_t AUTH_HASH[32] PROGMEM = {
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-};
+// AUTH_HASH lives in klap_secret.h, which is gitignored. Copy
+// klap_secret.h.example over it and paste in the output of authhash.bat.
+//
+// It is kept out of the repository because sha256(sha1(email) + sha1(password))
+// is only as strong as the password behind it: with the account email known, a
+// short one can be recovered from the hash by brute force.
+#include "klap_secret.h"
 
 Klap klap;
 uint8_t authHashRam[32];
