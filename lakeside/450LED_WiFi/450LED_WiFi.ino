@@ -94,8 +94,16 @@
 #define BULB_LINK   3          // below MQTT at 4; the server takes 0-2
 
 // A KLAP command costs ~1.3s -- two HTTP round trips plus hashing and AES on
-// an 8-bit core. Nowhere near fast enough for an animation frame, so bulb work
-// happens only on the idle path, rate limited, and backs off when failing.
+// an 8-bit core -- and while it runs the wait loops read and discard whatever
+// else arrives, incoming commands included. So the bulb is DEBOUNCED, not
+// merely rate limited: nothing is sent while you are still pressing things,
+// and one update goes out once the strip has been quiet this long.
+//
+// The effect is that the strip stays instant no matter how fast you tap, and
+// the lamp catches up to the final state a beat after you stop. Sending it
+// every intermediate colour would be pointless anyway -- it cannot keep up,
+// and only the last one is visible.
+#define BULB_QUIET_MS 1200
 #define BULB_MIN_MS 1500
 #define BULB_MAX_FAILS 3
 #define BULB_RETRY_MS  30000
@@ -166,6 +174,7 @@ CRGB bulbTint = CRGB::Red;
 bool bulbDirty = false;
 unsigned long lastBulb = 0;
 uint8_t bulbFails = 0;          // consecutive failures, drives the backoff
+unsigned long lastCmd = 0;      // any command in; debounces the bulb
 
 // Declared here rather than beside the Kasa helpers because startWiFi() runs
 // the handshake during boot, and that sits higher in the file.
@@ -743,6 +752,10 @@ void bulbPush() {
 // Returns true if the strip changed and needs a show().
 // ---------------------------------------------------------------------------
 bool applyCommand(const char *path) {
+  // Any command restarts the bulb's quiet timer, so a burst of taps produces
+  // exactly one bulb update rather than one per tap.
+  lastCmd = millis();
+
   // --- brightness and power: deliberately do NOT disturb a running animation,
   // --- so you can dim or blank an effect without restarting it.
 
@@ -978,9 +991,14 @@ void loop() {
     // rate limited -- never in front of an LED frame, never once per slider
     // step. Frames take priority; the bulb catches up when there is slack.
 #if BULB_ENABLE
+    // Only when the strip has been quiet, and only with nothing already
+    // waiting on the wire -- a push blocks for over a second and would eat
+    // whatever arrived during it.
     const unsigned long bulbWait =
       (bulbFails >= BULB_MAX_FAILS) ? BULB_RETRY_MS : BULB_MIN_MS;
-    if (bulbDirty && millis() - lastBulb >= bulbWait) { bulbPush(); return; }
+    if (bulbDirty && !esp.available()
+        && millis() - lastCmd  >= BULB_QUIET_MS
+        && millis() - lastBulb >= bulbWait) { bulbPush(); return; }
 #endif
 
     if (anim) {
